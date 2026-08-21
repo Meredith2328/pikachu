@@ -1,0 +1,13 @@
+{
+  "interval_enabled": true,
+  "interval_min": 60,
+  "interval_max": 120,
+  "categories": ["eye", "neck", "water", "stand", "screen", "walk", "posture"],
+
+  "long_session_enabled": true,
+  "long_session_min": 90,
+  "rest_min": 5,
+  "long_categories": ["stand", "neck"],
+
+  "title": "该休息一下了"
+}
