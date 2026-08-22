@@ -198,6 +198,8 @@ python pikachu.py dsh report "调研X" --stage done --detail "结论：……"
 
 ## 桌宠交互
 
+![气泡外观](docs/screenshot_bubble.png)
+
 - 悬浮：显示状态气泡（已收通知数 / 来源统计 / 最近 3 条）；
 - 通知气泡：有 `ttl` 自动消失；悬浮其上不消失；点击立即关闭；
 - 气泡外观：Canvas 手绘的**像素风切角卡片**，致敬 pilog（pixel / minimal 主题）——

@@ -31,7 +31,7 @@ from .. import bus
 from ..protocol import Notification
 from .common import collapse, stage_level, stage_title
 
-DEFAULT_TIMEOUT = 420      # 与 dsh-subagent 技能文档一致的默认超时（秒）
+DEFAULT_TIMEOUT = 600      # headless 默认超时（秒）；重任务用 --timeout 调大
 SNIPPET_LEN = 160          # 完成气泡里回答摘要长度
 ERR_TAIL_LEN = 200         # 失败气泡里 stderr 尾部长度
 
