@@ -19,6 +19,7 @@ PIX_PANEL = "#F3EFE2"      # 面板底
 PIX_INK = "#3C4043"        # 主墨色：边框 / 标题 / 强调文字
 PIX_TEXT = "#5F6368"       # 正文
 PIX_MUTE = "#9AA0A6"       # 次要文字（来源 / 时间）
+PIX_ACCENT = "#1A73E8"     # 链接/强调（pilog 的 accent 蓝）
 PIX_SHADOW = "#DAD6C6"     # 硬阴影色（偏移无模糊）
 PIX_BORDER_W = 2           # 硬边框宽
 PIX_SHADOW_GAP = 5         # 硬阴影偏移
