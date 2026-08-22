@@ -76,10 +76,12 @@ def build_parser():
     p = argparse.ArgumentParser(prog="pikachu", description="皮卡丘：桌宠+通知总线+健康提醒")
     sub = p.add_subparsers(dest="command", required=True)
 
-    p_pet = sub.add_parser("pet", help="启动桌宠（内嵌总线，默认端口 8765）")
+    p_pet = sub.add_parser("pet", help="启动桌宠（内嵌总线 + 内嵌健康提醒）")
     p_pet.add_argument("--port", type=int, default=8765)
     p_pet.add_argument("--subscribe-only", action="store_true",
                        help="只订阅已有总线，不在本进程开端口")
+    p_pet.add_argument("--no-reminder", action="store_true",
+                       help="不启动内嵌健康提醒")
 
     p_bus = sub.add_parser("bus", help="启动独立总线")
     p_bus.add_argument("--port", type=int, default=8765)
@@ -127,7 +129,8 @@ def main(argv=None) -> int:
     if args.command == "pet":
         from pika.pet import main as pmain
         return pmain(["--port", str(args.port)] +
-                     (["--subscribe-only"] if args.subscribe_only else []))
+                     (["--subscribe-only"] if args.subscribe_only else []) +
+                     (["--no-reminder"] if args.no_reminder else []))
     if args.command == "bus":
         from pika.bus import main as bmain
         cmd = ["--port", str(args.port)]

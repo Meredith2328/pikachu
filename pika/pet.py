@@ -499,7 +499,8 @@ class PikaMenu:
 # 桌宠主程序
 # ----------------------------------------------------------------------
 class PikaPet:
-    def __init__(self, port: int = DEFAULT_PORT, subscribe_only: bool = False):
+    def __init__(self, port: int = DEFAULT_PORT, subscribe_only: bool = False,
+                 with_reminder: bool = True):
         _make_dpi_aware()  # 进程级：让 Tk 走物理像素，measure 与渲染一致
         self.root = tk.Tk()
         self.root.title("皮卡丘")
@@ -570,10 +571,72 @@ class PikaPet:
         self.sse = None
         self._connect(port, subscribe_only)
 
+        # 内嵌健康提醒：后台线程跑调度循环（默认开启，--no-reminder 关闭）。
+        # 此前提醒器是独立进程，忘了启动就等于没有（日志里 8/19 后就没跑过）
+        self._reminder_stop = None
+        self._reminder_thread = None
+        if with_reminder:
+            self._start_reminder()
+
         # 驱动 controller 的自动隐藏 tick
         self._tick_ui()
         # 驱动鼠标跟随的渲染 tick（~30fps）
         self._tick_turn()
+
+    # ---- 内嵌健康提醒 ----
+    def _start_reminder(self):
+        """后台线程跑提醒调度循环。配置读 configs/reminder.json（与独立
+        runner 同源），坏配置/缺依赖只打日志不挡桌宠启动。"""
+        try:
+            from .reminder import ReminderScheduler
+            from .reminder_runner import load_config
+            from .win.idle import WinIdleSource
+            cfg = load_config()
+        except Exception as e:
+            print(f"提醒器未启动（配置或依赖问题）：{e}", file=sys.stderr)
+            return
+
+        scheduler = ReminderScheduler(
+            activity=WinIdleSource(), sink=self._reminder_sink(),
+            config=cfg)
+        stop = threading.Event()
+
+        def loop():
+            while not stop.is_set():
+                try:
+                    scheduler.step()
+                except Exception:
+                    pass  # 单步异常不杀线程，下一秒继续
+                stop.wait(1.0)
+
+        self._reminder_stop = stop
+        self._reminder_thread = threading.Thread(
+            target=loop, name="pika-reminder", daemon=True)
+        self._reminder_thread.start()
+
+    def _reminder_sink(self):
+        """提醒输出 → 控制器（走 UI 线程），静音/stale/去重逻辑自动生效。"""
+        pet = self
+
+        class _Sink:
+            def send(self, title, body, level="info", source="reminder"):
+                n = Notification(title=title, body=body, level=level,
+                                 source=source, ttl=12.0)
+                try:
+                    pet.root.after(0, lambda: pet._controller.handle(n))
+                except Exception:
+                    pass  # root 已销毁（退出中）：丢弃
+
+            last_send_ok = True
+
+        return _Sink()
+
+    def _stop_reminder(self):
+        if self._reminder_stop is not None:
+            self._reminder_stop.set()
+        if self._reminder_thread is not None:
+            self._reminder_thread.join(timeout=2.0)
+        self._reminder_thread = None
 
     # ---- 总线连接 ----
     def _connect(self, port: int, subscribe_only: bool):
@@ -1025,6 +1088,7 @@ class PikaPet:
             self.sse.stop()
         if self.server is not None:
             self.server.stop()
+        self._stop_reminder()
         try:
             self._save_state("x", "y")   # 退出前存最后位置
         except Exception:
@@ -1041,12 +1105,15 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--subscribe-only", action="store_true",
                         help="只订阅已有总线，不在本进程开端口")
+    parser.add_argument("--no-reminder", action="store_true",
+                        help="不启动内嵌健康提醒")
     args = parser.parse_args(argv)
     if tk is None:
         print("本环境没有 tkinter，无法启动桌宠 GUI", file=sys.stderr)
         return 1
     _make_dpi_aware()
-    pet = PikaPet(port=args.port, subscribe_only=args.subscribe_only)
+    pet = PikaPet(port=args.port, subscribe_only=args.subscribe_only,
+                  with_reminder=not args.no_reminder)
     pet.mainloop()
     return 0
 

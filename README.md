@@ -28,18 +28,18 @@
 ## 快速开始
 
 ```bash
-# 1. 启动桌宠（内嵌总线，占用 8765 端口）
+# 1. 启动桌宠（内嵌总线 + 内嵌健康提醒，一条命令全起来）
 python pikachu.py pet
 
 # 2. 发一条气泡看看（在另一个终端）
 python pikachu.py send "你好" "我是皮卡丘，你写代码超过一小时了"
 
-# 3. 启动健康提醒（另开终端）
-python pikachu.py reminder
-
-# 4. ZCode 自动化激活时通知（hook 里调用）
+# 3. ZCode 自动化激活时通知（hook 里调用）
 python pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件"
 ```
+
+桌宠默认**内嵌健康提醒**（后台线程跑调度循环，配置同 `reminder.json`），
+`--no-reminder` 可关。独立 runner 仍保留给"只跑总线不跑桌宠"的场景。
 
 依赖：Python 3.9+，tkinter（桌宠）、Pillow（贴图透明处理，可选）。全部标准库
 实现总线与提醒，无需 pip 安装任何东西。
@@ -84,7 +84,7 @@ python -m pika.cli send ... # 命令行发通知
 python -m pika.cli history  # 查看最近消息
 python -m pika.cli health   # 查看总线状态
 python -m pika.pet          # 桌宠（--subscribe-only 订阅外部总线）
-python -m pika.reminder_runner   # 健康提醒
+python -m pika.reminder_runner   # 健康提醒（独立跑；桌宠已内嵌，通常不用）
 python -m pika.adapters.zcode <名称> --stage done --detail "说明"
 python -m pika.adapters.codex event '<JSON>'   # Codex turn-complete 事件
 python -m pika.adapters.dsh run "任务名" "任务文本"   # 包装 DSH 子任务
