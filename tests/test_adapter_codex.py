@@ -101,8 +101,10 @@ class TestCodexAdapterE2E(unittest.TestCase):
 
     def test_event_bus_down_returns_zero(self):
         """通知钩子绝不能阻塞 Codex：总线挂了也返回 0。"""
-        r = self._run("event", json.dumps(TURN_EVENT, ensure_ascii=False),
-                      "--port", "1")
+        from tests.helpers import isolated_runtime_port
+        with isolated_runtime_port():   # 隔离回退文件，防协商到活着的默认端口
+            r = self._run("event", json.dumps(TURN_EVENT, ensure_ascii=False),
+                          "--port", "1")
         self.assertEqual(r.returncode, 0)
         self.assertIn("总线", r.stderr)
 

@@ -178,7 +178,9 @@ class Bubble:
                                font=f_meta, fill=PIX_MUTE)
             ty += lsp_m
 
-        win.bind("<Button-1>", self._on_click)
+        # 只绑 canvas：气泡窗口与 canvas 双绑定会让一次点击触发两次
+        # on_click（win 和 canvas 都会收到事件）——点击链接会连开两个
+        # 浏览器。canvas 铺满窗口，收全部点击，无需再绑 win。
         canvas.bind("<Button-1>", self._on_click)
         win.bind("<Enter>", lambda e: self._hover(True))
         win.bind("<Leave>", lambda e: self._hover(False))
@@ -286,6 +288,20 @@ class Bubble:
                 bg = style_bg(st)
                 for token in self._split_for_wrap(text):
                     tw = f.measure(token)
+                    if tw > maxw:
+                        # 单个 token（长链接/长英文词）超宽：按字符硬拆，
+                        # 避免它撑破 maxw 把整行/气泡拉宽
+                        for ch in token:
+                            if cur_w + f.measure(ch) > maxw and row_cells:
+                                out_rows.append(row_cells)
+                                row_cells = []
+                                cur_w = 0
+                            cell = (ch, st, f, style_fg(st), bg)
+                            if url is not None:
+                                cell = cell + (url,)
+                            row_cells.append(cell)
+                            cur_w += f.measure(ch)
+                        continue
                     if cur_w + tw > maxw and row_cells:
                         out_rows.append(row_cells)
                         row_cells = []

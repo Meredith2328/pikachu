@@ -39,8 +39,11 @@ class TestCli(unittest.TestCase):
         self.assertTrue(resp["ok"])
 
     def test_send_fail_when_bus_down(self):
-        r = subprocess.run([PY, "-m", "pika.cli", "--port", "1", "send", "x"],
-                           cwd=ROOT, capture_output=True, text=True, timeout=30)
+        from tests.helpers import isolated_runtime_port
+        with isolated_runtime_port():
+            r = subprocess.run([PY, "-m", "pika.cli", "--port", "1", "send", "x"],
+                               cwd=ROOT, capture_output=True, text=True,
+                               timeout=30)
         self.assertEqual(r.returncode, 1)
         self.assertIn("失败", r.stderr)
 
@@ -71,10 +74,12 @@ class TestCli(unittest.TestCase):
                        "long_session_enabled": False,
                        "categories": ["eye"]}, f)
         try:
-            r = subprocess.run(
-                [PY, "-m", "pika.reminder_runner", "--once", "--port", "1",
-                 "--fake", fake, "--config", cfg, "--interval", "0.05"],
-                cwd=ROOT, capture_output=True, text=True, timeout=30)
+            from tests.helpers import isolated_runtime_port
+            with isolated_runtime_port():
+                r = subprocess.run(
+                    [PY, "-m", "pika.reminder_runner", "--once", "--port", "1",
+                     "--fake", fake, "--config", cfg, "--interval", "0.05"],
+                    cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertNotEqual(r.returncode, 0, "总线故障应非零退出")
             self.assertTrue(r.stderr.strip(), "应打印失败原因")
         finally:
