@@ -249,8 +249,19 @@ class TestPetTurnIntegration(unittest.TestCase):
                 if pet._turn_job is not None:
                     pet.root.after_cancel(pet._turn_job)
                     pet._turn_job = None
-                # 注入极小 tau 的导演：一步收敛，断言确定性的末态帧
-                pet._director = TurnDirector(tau=1e-6)
+                # 注入极小 tau 的导演 + 确定性步进时钟：
+                # tau=1e-6 让一步收敛；clock 每次调用推进固定步长，
+                # 否则两次 update 落在同一 time.time() 刻度时 dt=0、
+                # k=0，姿态一步都不动（CI 定时器精度下必现）
+                class _StepClock:
+                    def __init__(self):
+                        self.t = 1000.0
+
+                    def __call__(self):
+                        self.t += 0.05
+                        return self.t
+
+                pet._director = TurnDirector(tau=1e-6, clock=_StepClock())
                 tk_root = pet.root
                 tk_root.update()
                 # 钉死窗口坐标查询：CI 无头会话里 overrideredirect 窗口的
