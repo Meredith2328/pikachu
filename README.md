@@ -5,7 +5,8 @@
 本地通知总线 + 桌宠气泡 + 健康提醒。三块互相独立、可单独使用，只通过一条
 消息协议（`pika.protocol.Notification`）通信。
 
-- **pika-bus**：监听 `127.0.0.1:8765` 的消息总线。任何软件 POST 一条 JSON 进来，
+- **pika-bus**：监听 `127.0.0.1:7452` 的消息总线（7452 = PIKA 的手机九键
+  键序，刻意挑的冷门端口防撞车）。任何软件 POST 一条 JSON 进来，
   桌宠就弹气泡。不轮询，推送靠 SSE 长连接。
 - **pika-pet**：桌面桌宠（tkinter，仅 Windows）。只负责"显示"：透明置顶小窗口、
   气泡、拖动、右键菜单、隐藏到角落。不感知消息来源。
@@ -49,7 +50,7 @@ python pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件
 任何软件（不限 Python）向总线 POST（必须 `Content-Type: application/json`）：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/notify \
+curl -X POST http://127.0.0.1:7452/notify \
   -H "Content-Type: application/json" \
   -d '{"title":"该休息了","body":"起来走走","level":"warn","source":"reminder","ttl":10}'
 ```
@@ -74,12 +75,15 @@ curl -X POST http://127.0.0.1:8765/notify \
 - 总线进程被意外 kill 时，客户端在心跳超时（默认 20 秒）内检测到并自动重连；
 - 慢订阅者不阻塞发布方：队列满的连接会被断开，由客户端重连补拉；
 - 本机端口被其他软件占用时，桌宠内嵌总线自动回退到随机端口，并把实际端口
-  写入 `runtime/port`，同时打印提示。
+  写入 `runtime/port`，同时打印提示；
+- **端口协商**：所有发送方（CLI / 适配器 / 钩子）连不上目标端口时，自动读
+  `runtime/port` 用桌宠的实际端口重试一次——即使发生了端口回退，通知链
+  也不会断。
 
 ## 模块与命令
 
 ```text
-python -m pika.bus          # 独立总线（默认 8765）
+python -m pika.bus          # 独立总线（默认 7452）
 python -m pika.cli send ... # 命令行发通知
 python -m pika.cli history  # 查看最近消息
 python -m pika.cli health   # 查看总线状态
@@ -251,4 +255,4 @@ python tests/e2e/run_all.py                     # 端到端测试（起真进程
 单元测试 167 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
 提醒器→总线→桌宠全链路、SSE 心跳保活、跨进程总线重启恢复、GUI 悬浮绑定、
 转身朝向决策（滞回/平滑/经过正面换边）等。
-测试全部使用随机端口，不依赖 8765 未被占用。
+测试全部使用随机端口，不依赖默认端口未被占用。

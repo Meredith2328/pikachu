@@ -3,9 +3,9 @@
 
 用法:
     python -m pika.cli send "标题" "正文" [--level info|success|warn|error]
-                                  [--source 名字] [--ttl 秒] [--port 8765]
-    python -m pika.cli history [--n 20] [--port 8765]
-    python -m pika.cli health [--port 8765]
+                                  [--source 名字] [--ttl 秒] [--port 7452]
+    python -m pika.cli history [--n 20] [--port 7452]
+    python -m pika.cli health [--port 7452]
 
 返回码：0 成功；1 发送失败（如总线没在跑）。
 """

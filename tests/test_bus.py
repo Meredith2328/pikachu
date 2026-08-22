@@ -117,6 +117,63 @@ class TestBusSse(BusTestCase):
             client.join()
 
 
+class TestPortNegotiation(BusTestCase):
+    """端口协商：目标端口连不上时读 runtime/port 回退端口重试一次。"""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        from pika import bus as bus_mod
+        self._orig_file = bus_mod.RUNTIME_PORT_FILE
+        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="port_")
+        import os as _os
+        _os.close(fd)
+        _os.remove(tmp)
+        bus_mod.RUNTIME_PORT_FILE = type(self._orig_file)(tmp)
+        self.bus_mod = bus_mod
+
+    def tearDown(self):
+        self.bus_mod.RUNTIME_PORT_FILE = self._orig_file
+        super().tearDown()
+
+    def test_send_falls_back_to_runtime_port(self):
+        """默认端口连不上 + runtime/port 指向真实总线 → 消息仍能送达。"""
+        self.bus_mod.RUNTIME_PORT_FILE.write_text(str(self.port),
+                                                  encoding="utf-8")
+        dead = self.free_dead_port()
+        send_notification(Notification(title="negotiate"), port=dead)
+        items = fetch_history(port=self.port)
+        self.assertEqual(items[-1]["title"], "negotiate")
+
+    def test_fetch_health_falls_back(self):
+        self.bus_mod.RUNTIME_PORT_FILE.write_text(str(self.port),
+                                                  encoding="utf-8")
+        dead = self.free_dead_port()
+        h = fetch_health(port=dead)
+        self.assertEqual(h["port"], self.port)
+
+    def test_no_fallback_file_raises(self):
+        dead = self.free_dead_port()
+        with self.assertRaises(Exception):
+            fetch_health(port=dead)
+
+    def test_garbage_port_file_ignored(self):
+        self.bus_mod.RUNTIME_PORT_FILE.write_text("不是端口", encoding="utf-8")
+        dead = self.free_dead_port()
+        with self.assertRaises(Exception):
+            fetch_health(port=dead)
+
+    @staticmethod
+    def free_dead_port():
+        """占一个端口再关掉：不保证仍空闲，但几乎不会被监听。"""
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+
 class TestBusSseIdentity(BusTestCase):
     def test_sse_stream_starts_with_identity_comment(self):
         """连接建立即发送带内身份行 ": gen=N pid=P"。

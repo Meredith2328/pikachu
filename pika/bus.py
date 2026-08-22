@@ -9,7 +9,7 @@
   也可以独立跑一个 bus 进程，让多个显示端共享。
 
 用法（standalone）:
-    python -m pika.bus --port 8765 --port-file runtime/port
+    python -m pika.bus --port 7452 --port-file runtime/port
 """
 import argparse
 import json
@@ -22,11 +22,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from .protocol import Notification, ProtocolError, PROTOCOL_VERSION
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
+# 7452 = PIKA 的手机九键键序（P=7 I=4 K=5 A=2），刻意挑的冷门端口，
+# 避开 3000/5000/8000/8080/8765 这类常用开发端口，降低撞车概率
+DEFAULT_PORT = 7452
 SSE_HEARTBEAT = 15.0
 SSE_REPLAY_LIMIT = 200  # 与历史容量一致：增量补拉不因回放窗口丢消息
 # 哨兵：队列里出现特殊 mid 表示"连接被踢出 / 总线停机"，handler 收到后退出
@@ -329,30 +332,96 @@ def _url(port: int, host: str = DEFAULT_HOST, path: str = "/") -> str:
     return f"http://{host}:{port}{path}"
 
 
+# 端口协商：桌宠内嵌总线被占端口时回退随机端口并写 runtime/port；
+# 发送方连接失败后读它重试一次，适配器链不再被回退打断。
+RUNTIME_PORT_FILE = Path(__file__).resolve().parent.parent / "runtime" / "port"
+
+
+def _fallback_port():
+    try:
+        p = int(RUNTIME_PORT_FILE.read_text(encoding="utf-8").strip())
+        if 0 < p < 65536:
+            return p
+    except Exception:
+        pass
+    return None
+
+
 def send_notification(notif: Notification, port: int = DEFAULT_PORT,
                       host: str = DEFAULT_HOST, timeout: float = 5.0) -> dict:
-    """POST 一条消息到总线，返回总线响应 JSON。"""
-    req = urllib.request.Request(
-        _url(port, host, "/notify"),
-        data=notif.to_json().encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    """POST 一条消息到总线，返回总线响应 JSON。
+
+    目标端口连不上时读 runtime/port（桌宠端口回退时写入的实际端口）
+    重试一次；服务明确拒绝（HTTP 4xx/5xx）不换端口重试。"""
+    try:
+        return _http_json(port, host, "POST", "/notify",
+                          body=notif.to_json().encode("utf-8"),
+                          headers={"Content-Type":
+                                   "application/json; charset=utf-8"},
+                          timeout=timeout)
+    except urllib.error.HTTPError:
+        raise  # 服务在但拒绝：协议层问题，换端口无意义
+    except Exception:
+        fb = _fallback_port()
+        if fb is not None and fb != port:
+            return _http_json(fb, host, "POST", "/notify",
+                              body=notif.to_json().encode("utf-8"),
+                              headers={"Content-Type":
+                                       "application/json; charset=utf-8"},
+                              timeout=timeout)
+        raise
 
 
 def fetch_health(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST,
                  timeout: float = 3.0) -> dict:
-    with urllib.request.urlopen(_url(port, host, "/health"), timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        return _http_json(port, host, "GET", "/health", timeout=timeout)
+    except urllib.error.HTTPError:
+        raise
+    except Exception:
+        fb = _fallback_port()
+        if fb is not None and fb != port:
+            return _http_json(fb, host, "GET", "/health", timeout=timeout)
+        raise
 
 
 def fetch_history(n: int = 20, port: int = DEFAULT_PORT,
                   host: str = DEFAULT_HOST, timeout: float = 3.0) -> list:
-    url = _url(port, host, f"/history?n={n}")
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        data = _http_json(port, host, "GET", f"/history?n={n}",
+                          timeout=timeout)
+    except urllib.error.HTTPError:
+        raise
+    except Exception:
+        fb = _fallback_port()
+        if fb is not None and fb != port:
+            data = _http_json(fb, host, "GET", f"/history?n={n}",
+                              timeout=timeout)
+        else:
+            raise
     return data.get("items", [])
+
+
+def _http_json(port: int, host: str, method: str, path: str,
+               body: bytes = None, headers: dict = None,
+               timeout: float = 5.0) -> dict:
+    """对总线做一次 HTTP 请求并解析 JSON 响应。
+
+    用 http.client 显式连 host:port（不构造 URL、不跟随重定向），
+    与"只连本机回环总线"的语义一致；4xx/5xx 转成 HTTPError，保持与
+    原 urllib 版本相同的异常语义。"""
+    import http.client
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        status, reason = resp.status, resp.reason
+    finally:
+        conn.close()
+    if status >= 400:
+        raise urllib.error.HTTPError(path, status, reason or "", None, None)
+    return json.loads(data)
 
 
 class SSEClient:
@@ -506,7 +575,7 @@ def _write_port_file(path: str, port: int):
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="pika-bus", description="皮卡丘本地通知总线")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help="监听端口，0 表示随机分配（默认 8765）")
+                        help="监听端口，0 表示随机分配（默认 7452）")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port-file", default=None,
                         help="启动后把实际端口写入该文件（供测试/脚本读取）")
