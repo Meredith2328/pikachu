@@ -9,18 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pika.bus import BusServer, fetch_history
 from pika.adapters.codex import parse_event, read_payload, collapse
+from tests.helpers import free_port
 
 PY = sys.executable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def free_port():
-    import socket
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
 
 
 TURN_EVENT = {

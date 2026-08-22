@@ -6,17 +6,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def gui_available():
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        root.update()
-        root.destroy()
-        return True
-    except Exception:
-        return False
+from tests.helpers import gui_available
 
 
 @unittest.skipUnless(gui_available(), "无 GUI 环境")

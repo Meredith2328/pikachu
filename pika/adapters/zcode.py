@@ -18,20 +18,10 @@ import sys
 
 from .. import bus
 from ..protocol import Notification
-
-# 阶段 → （级别，中文事件词）。标题统一为「{事件词} · {名称}」，
-# 级别的视觉语义由气泡徽章/配色表达，标题不再放 emoji
-STAGE_STYLE = {
-    "start": ("info", "开始"),
-    "done": ("success", "完成"),
-    "error": ("error", "失败"),
-    "run": ("info", "进行中"),
-}
-
+from .common import STAGE_STYLE, stage_level, stage_title
 
 def _title(args) -> str:
-    word = STAGE_STYLE.get(args.stage, ("info", "进行中"))[1]
-    return f"{word} · {args.name}"
+    return stage_title(args.stage, args.name)
 
 
 def _body(args) -> str:
@@ -52,7 +42,7 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
     args = parser.parse_args(argv)
 
-    level = args.level or STAGE_STYLE[args.stage][0]
+    level = args.level or stage_level(args.stage)
     n = Notification(title=_title(args), body=_body(args), level=level,
                      source=args.source, ttl=args.ttl)
     try:

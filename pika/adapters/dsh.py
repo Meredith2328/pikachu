@@ -29,16 +29,11 @@ from pathlib import Path
 
 from .. import bus
 from ..protocol import Notification
+from .common import collapse, stage_level, stage_title
 
 DEFAULT_TIMEOUT = 420      # 与 dsh-subagent 技能文档一致的默认超时（秒）
 SNIPPET_LEN = 160          # 完成气泡里回答摘要长度
 ERR_TAIL_LEN = 200         # 失败气泡里 stderr 尾部长度
-
-
-def collapse(text, limit):
-    """压平空白并截断到 limit，末尾加省略号。"""
-    s = " ".join(str(text or "").split())
-    return s[:limit] + ("…" if len(s) > limit else "")
 
 
 def _send(notif, port, fatal=False) -> bool:
@@ -53,13 +48,8 @@ def _send(notif, port, fatal=False) -> bool:
 
 
 def _report_main(args) -> int:
-    # 标题统一为「{事件词} · {名称}」，与 zcode/codex 适配器同构
-    stage_word = {"start": "开始", "done": "完成",
-                  "error": "失败", "run": "进行中"}
-    stage_level = {"start": "info", "done": "success",
-                   "error": "error", "run": "info"}
-    level = args.level or stage_level[args.stage]
-    n = Notification(title=f"{stage_word[args.stage]} · {args.name}",
+    level = args.level or stage_level(args.stage)
+    n = Notification(title=stage_title(args.stage, args.name),
                      body=args.detail or "", level=level,
                      source=args.source, ttl=args.ttl)
     ok = _send(n, args.port)
@@ -83,7 +73,7 @@ def run_wrapped(args) -> int:
         return 2
 
     cmd = [args.dsh_exe, "--profile", args.profile, task]
-    _send(Notification(title=f"开始 · {args.name}",
+    _send(Notification(title=stage_title("start", args.name),
                        body=collapse(task, SNIPPET_LEN), level="info",
                        source=args.source, ttl=args.ttl), args.port)
 
@@ -93,13 +83,13 @@ def run_wrapped(args) -> int:
             capture_output=True, text=True,
             encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        _send(Notification(title=f"失败 · {args.name}",
+        _send(Notification(title=stage_title("error", args.name),
                            body=f"找不到可执行文件：{args.dsh_exe}",
                            level="error", source=args.source, ttl=args.ttl),
               args.port)
         return 4
     except subprocess.TimeoutExpired:
-        _send(Notification(title=f"失败 · {args.name}",
+        _send(Notification(title=stage_title("error", args.name),
                            body=f"超时（>{args.timeout}s）被终止",
                            level="error", source=args.source, ttl=args.ttl),
               args.port)
@@ -111,15 +101,14 @@ def run_wrapped(args) -> int:
 
     if proc.returncode == 0 and proc.stdout.strip():
         body = collapse(proc.stdout, SNIPPET_LEN) or "（空输出）"
-        level = "success"
-        word = "完成"
+        stage = "done"
     else:
         tail = collapse((proc.stderr or "").strip()[-ERR_TAIL_LEN:], ERR_TAIL_LEN)
         body = (f"退出码 {proc.returncode}\n{tail}").strip()
-        level = "error"
-        word = "失败"
-    _send(Notification(title=f"{word} · {args.name}",
-                       body=body, level=level, source=args.source, ttl=args.ttl),
+        stage = "error"
+    _send(Notification(title=stage_title(stage, args.name),
+                       body=body, level=stage_level(stage),
+                       source=args.source, ttl=args.ttl),
           args.port)
     return proc.returncode
 

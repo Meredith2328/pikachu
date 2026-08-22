@@ -45,11 +45,10 @@ PAYLOAD_TITLE_KEYS = ("title", "session_title", "sessionTitle")
 
 
 def collapse(text: str, limit: int = SNIPPET_LEN) -> str:
-    """压平空白并截到 limit 字符（超出补省略号）。"""
-    text = " ".join((text or "").split())
-    if len(text) > limit:
-        text = text[:limit].rstrip() + "…"
-    return text
+    """压平空白并截到 limit 字符（超出补省略号）。实现收敛在
+    pika.adapters.common.collapse，这里保留默认值方便调用点。"""
+    from pika.adapters.common import collapse as _collapse
+    return _collapse(text, limit)
 
 
 def text_from_content(content) -> str:

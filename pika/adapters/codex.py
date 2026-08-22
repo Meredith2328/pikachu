@@ -27,6 +27,7 @@ import sys
 
 from .. import bus
 from ..protocol import Notification
+from .common import collapse, stage_level, stage_title
 
 EVENT_TURN_DONE = "agent-turn-complete"
 SNIPPET_LEN = 160          # 事件正文摘要长度
@@ -37,12 +38,6 @@ TYPE_KEYS = ("type", "event")
 TITLE_KEYS = ("thread-name", "thread_title", "title", "name")
 BODY_KEYS = ("last_assistant_message", "last-assistant-message",
              "lastAssistantMessage", "response", "message")
-
-
-def collapse(text, limit):
-    """压平空白并截断到 limit，末尾加省略号。"""
-    s = " ".join(str(text or "").split())
-    return s[:limit] + ("…" if len(s) > limit else "")
 
 
 def parse_event(payload):
@@ -80,13 +75,8 @@ def read_payload(argv_payload):
 
 
 def _report_main(args) -> int:
-    # 标题统一为「{事件词} · {名称}」，与 zcode/dsh 适配器同构
-    stage_word = {"start": "开始", "done": "完成",
-                  "error": "失败", "run": "进行中"}
-    stage_level = {"start": "info", "done": "success",
-                   "error": "error", "run": "info"}
-    level = args.level or stage_level[args.stage]
-    n = Notification(title=f"{stage_word[args.stage]} · {args.name}",
+    level = args.level or stage_level(args.stage)
+    n = Notification(title=stage_title(args.stage, args.name),
                      body=args.detail or "", level=level,
                      source=args.source, ttl=args.ttl)
     try:

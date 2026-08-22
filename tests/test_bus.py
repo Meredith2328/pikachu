@@ -7,15 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pika.bus import BusServer, send_notification, fetch_health, fetch_history, SSEClient
 from pika.protocol import Notification, ProtocolError
-
-
-def free_port():
-    import socket
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
+from tests.helpers import free_port
 
 
 class BusTestCase(unittest.TestCase):

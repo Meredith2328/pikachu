@@ -8,6 +8,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pika import pet_state
+from tests.helpers import gui_available
 
 
 class TestPetState(unittest.TestCase):
@@ -66,18 +67,6 @@ class TestPetState(unittest.TestCase):
         s = pet_state.load_state()
         self.assertEqual(s["scale"], 1.0)
         self.assertIsNone(s["x"])
-
-
-def gui_available():
-    try:
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        root.update()
-        root.destroy()
-        return True
-    except Exception:
-        return False
 
 
 @unittest.skipUnless(gui_available(), "无 GUI 环境")

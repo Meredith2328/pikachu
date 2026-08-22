@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pika.bus import BusServer, send_notification, SSEClient
 from pika.protocol import Notification
 from pika.pet_core import PetController
+from tests.helpers import free_port
 
 
 class FakeClock:
@@ -207,15 +208,6 @@ class TestGenerationReset(unittest.TestCase):
         finally:
             bus1.kill()
             bus1.wait(5)
-
-
-def free_port():
-    import socket
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
 
 
 class TestIdleWrap(unittest.TestCase):
