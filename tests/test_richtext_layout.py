@@ -102,6 +102,31 @@ class TestRichTextLayout(unittest.TestCase):
         b.close()
         root.destroy()
 
+    def test_double_click_link_opens_once(self):
+        """真实双击会触发两次 <Button-1>，每次命中链接；_open_link 的
+        时间去重应保证只开一个浏览器。"""
+        import tkinter as tk
+        from unittest import mock
+        from pika.bubble import Bubble
+        root = tk.Tk()
+        opened = []
+        b = Bubble(root, on_clicked=lambda: None)
+        b.show(type("N", (), {"title": "t", "body": "[文档](https://github.com)",
+                              "level": "info", "source": "s", "ts": None})(),
+               kind="notice")
+        root.update_idletasks()
+        if b._links:
+            x1, y1, x2, y2, url = b._links[0]
+            e = type("E", (), {"x": (x1 + x2) / 2, "y": (y1 + y2) / 2})()
+            with mock.patch("webbrowser.open",
+                            side_effect=lambda u: opened.append(u)):
+                # 模拟双击 = 同一点快速两次点击（保留真实 _open_link 防抖）
+                b._on_click(e)
+                b._on_click(e)
+        self.assertEqual(len(opened), 1, "双击链接应只开一个浏览器")
+        b.close()
+        root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

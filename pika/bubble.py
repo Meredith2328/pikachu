@@ -269,6 +269,10 @@ class Bubble:
         def emit_line(cells, hgt, above=0):
             nonlocal height, width
             w = sum(cell[2].measure(cell[0]) for cell in cells)
+            # 单行宽度硬钳到 maxw：任何一行（含列表前缀叠加）都不允许
+            # 把气泡撑到超过正文上限，否则"会话完成"这类长消息会撑成一条
+            if w > maxw:
+                w = maxw
             width = max(width, w)
             height += above + hgt
             lines.append({"cells": cells, "height": hgt, "above": above})
@@ -363,8 +367,18 @@ class Bubble:
         return {"width": width, "height": height, "lines": lines}
 
     def _open_link(self, url):
-        """点击链接：用系统默认浏览器打开（失败则忽略）。"""
+        """点击链接：用系统默认浏览器打开（失败则忽略）。
+
+        加 800ms 时间去重：真实桌面双击会触发两次 <Button-1>，每次
+        都命中链接区，不加去重会连开两个浏览器。仅对"同 url 相邻两次"
+        去重，不同 url 或间隔稍长的再次点击仍会开。"""
         try:
+            now = time.time()
+            if (getattr(self, "_last_link_url", None) == url
+                    and now - getattr(self, "_last_link_ts", 0) < 0.8):
+                return
+            self._last_link_url = url
+            self._last_link_ts = now
             import webbrowser
             webbrowser.open(url)
         except Exception:
