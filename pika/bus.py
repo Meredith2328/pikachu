@@ -413,12 +413,16 @@ def send_notification(notif: Notification, port: int = DEFAULT_PORT,
 
 
 def fetch_health(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST,
-                 timeout: float = 3.0) -> dict:
+                 timeout: float = 3.0, negotiate: bool = True) -> dict:
+    """查询总线健康。negotiate=False 时不做 runtime/port 回退——
+    用于"探测这个端口是不是 pika 总线"的场景（协商会把探测带偏）。"""
     try:
         return _http_json(port, host, "GET", "/health", timeout=timeout)
     except urllib.error.HTTPError:
         raise
     except Exception:
+        if not negotiate:
+            raise
         fb = _fallback_port()
         if fb is not None and fb != port:
             return _http_json(fb, host, "GET", "/health", timeout=timeout)
