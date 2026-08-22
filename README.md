@@ -173,7 +173,7 @@ python /d/_Project/pikachu/pikachu.py zcode "watch-inbox" --stage error --detail
 `blend_indices` 吸附到最近的真实关键帧，画面永远清晰。改参数后重建：
 
 ```bash
-C:/Software/Miniconda/envs/moni/python.exe tools/build_turn_assets.py
+python tools/build_turn_assets.py   # 需 PIL + scipy（如 numpy/ndimage）
 ```
 
 
