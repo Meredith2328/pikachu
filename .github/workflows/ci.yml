@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖（桌宠 GUI 测试需要 Pillow）
+        run: pip install pillow scipy
+      - name: 单元测试
+        run: python -m unittest discover -s tests -p "test_*.py" -v
