@@ -39,19 +39,16 @@ class TestEmbeddedReminder(unittest.TestCase):
         self.assertFalse(thread.is_alive())
 
     def test_sink_routes_to_controller(self):
-        """提醒 sink 的通知走 UI 线程进控制器（静音/去重链路生效）。"""
+        """提醒 sink 投进线程安全队列，由主线程 drain 进控制器
+        （静音/去重链路生效；后台线程绝不直接碰 Tk）。"""
         pet = self._pet()
         try:
             before = len(pet._controller.recent())
             pet._reminder_sink().send(title="该休息一下了",
                                       body="站起来走两步",
                                       level="warn", source="reminder")
-            # after(0) 回调需要泵一次事件循环
-            deadline = time.time() + 3
-            while time.time() < deadline and \
-                    len(pet._controller.recent()) <= before:
-                pet.root.update()
-                time.sleep(0.02)
+            self.assertGreater(len(pet._ui_queue.queue), 0)
+            pet._drain_ui_queue()
             self.assertGreater(len(pet._controller.recent()), before)
             last = pet._controller.recent()[-1]
             self.assertEqual(last.source, "reminder")

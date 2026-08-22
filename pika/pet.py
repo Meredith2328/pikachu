@@ -17,6 +17,7 @@
 import ctypes
 import json
 import os
+import queue
 import sys
 import threading
 from pathlib import Path
@@ -114,6 +115,8 @@ class PikaPet:
         # 总线：内嵌或订阅外部
         self.server = None
         self.sse = None
+        # 后台线程（SSE / 提醒）→ 主线程的通知通道：跨线程绝不直接碰 Tk
+        self._ui_queue = queue.Queue()
         self._connect(port, subscribe_only)
 
         # 内嵌健康提醒：后台线程跑调度循环（默认开启，--no-reminder 关闭）。
@@ -160,7 +163,8 @@ class PikaPet:
         self._reminder_thread.start()
 
     def _reminder_sink(self):
-        """提醒输出 → 控制器（走 UI 线程），静音/stale/去重逻辑自动生效。"""
+        """提醒输出 → 线程安全队列 → 主线程 tick 消费进控制器，
+        静音/stale/去重链路自动生效（绝不从后台线程碰 Tk）。"""
         pet = self
 
         class _Sink:
@@ -168,9 +172,9 @@ class PikaPet:
                 n = Notification(title=title, body=body, level=level,
                                  source=source, ttl=12.0)
                 try:
-                    pet.root.after(0, lambda: pet._controller.handle(n))
+                    pet._ui_queue.put_nowait(n)
                 except Exception:
-                    pass  # root 已销毁（退出中）：丢弃
+                    pass  # 队列满/退出中：丢弃
 
             last_send_ok = True
 
@@ -221,8 +225,24 @@ class PikaPet:
             self.sse.start()
 
     def _on_bus_msg(self, n: Notification):
-        # SSE 回调在 daemon 线程，桥接到 tk 主线程
-        self.root.after(0, lambda: self._controller.handle(n))
+        # SSE 回调在 daemon 线程：跨线程调 Tk（after/destroy 等）会触发
+        # Tcl_AsyncDelete 崩溃，改为投递线程安全队列，由主线程 tick 消费
+        try:
+            self._ui_queue.put_nowait(n)
+        except Exception:
+            pass  # 队列满/退出中：丢弃，下一条重连补拉会再送
+
+    def _drain_ui_queue(self):
+        """主线程消费后台线程投递的通知（SSE / 内嵌提醒共用）。"""
+        while True:
+            try:
+                n = self._ui_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._controller.handle(n)
+            except Exception:
+                pass
 
     # ---- 控制器回调 ----
     def _bubble_show(self, n: Notification):
@@ -243,6 +263,10 @@ class PikaPet:
     def _tick_ui(self):
         try:
             self._controller.tick()
+        except Exception:
+            pass
+        try:
+            self._drain_ui_queue()
         except Exception:
             pass
         try:
