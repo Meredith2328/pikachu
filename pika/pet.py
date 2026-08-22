@@ -279,7 +279,8 @@ class PikaPet:
             self._static_pil = None
         if self._static_pil is None:
             try:
-                self.photo = tk.PhotoImage(file=str(path))
+                # 显式钉 master：多 Tk 实例（测试/嵌入）时不绑错默认 root
+                self.photo = tk.PhotoImage(file=str(path), master=self.root)
             except Exception:
                 self.photo = None
         self._rebuild_static_photo()
@@ -295,7 +296,7 @@ class PikaPet:
         if scale != 1.0:
             im = im.resize((max(1, round(root.size[0] * scale)),
                             max(1, round(root.size[1] * scale))), Image.NEAREST)
-        self.photo = ImageTk.PhotoImage(im)
+        self.photo = ImageTk.PhotoImage(im, master=self.root)
         self.canvas_w = self.photo.width()
         self.canvas_h = self.photo.height()
         try:
@@ -350,7 +351,7 @@ class PikaPet:
                     nw = max(1, round(im.size[0] * scale))
                     nh = max(1, round(im.size[1] * scale))
                     im = im.resize((nw, nh), Image.NEAREST)
-                out.append(ImageTk.PhotoImage(im))
+                out.append(ImageTk.PhotoImage(im, master=self.root))
             return out
 
         # 记录旧视觉中心，重建后把窗口挪回同一屏幕位置

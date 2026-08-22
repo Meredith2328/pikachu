@@ -73,7 +73,7 @@ class TestGenerationReset(unittest.TestCase):
                            retry_sec=0.3)  # 快重连，测试不等 5 秒
         client.start()
         try:
-            deadline = time.time() + 15
+            deadline = time.time() + 30
             while time.time() < deadline and len(received) < 2:
                 time.sleep(0.05)
             self.assertGreaterEqual(len(received), 2)
@@ -143,7 +143,8 @@ class TestGenerationReset(unittest.TestCase):
             [_sys.executable, "-m", "pika.bus", "--port", str(port)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            deadline = time.time() + 15
+            # 慢 CI（冷启动解释器 + 杀毒扫描）上拉起子总线可能要几十秒
+            deadline = time.time() + 40
             while time.time() < deadline:
                 try:
                     from pika import bus as _bus
@@ -157,7 +158,7 @@ class TestGenerationReset(unittest.TestCase):
                                retry_sec=0.5, read_timeout=3.0)
             client.start()
             try:
-                deadline = time.time() + 15
+                deadline = time.time() + 30
                 while time.time() < deadline and not any(
                         n.title == "pre-restart" for n in received):
                     time.sleep(0.1)
@@ -172,7 +173,7 @@ class TestGenerationReset(unittest.TestCase):
                     cwd=ROOT, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL)
                 try:
-                    deadline = time.time() + 15
+                    deadline = time.time() + 40
                     while time.time() < deadline:
                         try:
                             from pika import bus as _bus2

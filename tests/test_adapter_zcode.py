@@ -66,8 +66,11 @@ class TestZcodeAdapterE2E(unittest.TestCase):
         self.assertEqual(items[-1]["level"], "error")
 
     def test_bus_down_returns_3(self):
-        r = subprocess.run([PY, "-m", "pika.adapters.zcode", "--port", "1",
-                            "x"], cwd=ROOT, capture_output=True, text=True, timeout=30)
+        from tests.helpers import isolated_runtime_port
+        with isolated_runtime_port():   # 隔离真实回退文件，防止协商到活总线
+            r = subprocess.run([PY, "-m", "pika.adapters.zcode", "--port", "1",
+                                "x"], cwd=ROOT, capture_output=True,
+                               text=True, timeout=30)
         self.assertEqual(r.returncode, 3)
         self.assertIn("总线", r.stderr)
 

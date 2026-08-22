@@ -127,7 +127,9 @@ class TestDshWrapperE2E(unittest.TestCase):
         self.assertIn("调研X", last["title"])
 
     def test_report_bus_down_returns_3(self):
-        r = self._run("report", "x", "--port", "1")
+        from tests.helpers import isolated_runtime_port
+        with isolated_runtime_port():   # 隔离真实回退文件，防止协商到活总线
+            r = self._run("report", "x", "--port", "1")
         self.assertEqual(r.returncode, 3)
         self.assertIn("总线", r.stderr)
 

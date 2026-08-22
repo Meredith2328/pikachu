@@ -8,6 +8,10 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    env:
+      # runner 的 stderr 是 cp1252，子进程/测试打印中文会 UnicodeEncodeError；
+      # 强制 Python 全 UTF-8 模式（本地 GBK 控制台不受影响）
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

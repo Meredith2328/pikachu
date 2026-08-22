@@ -49,3 +49,25 @@ def gui_available():
         return True
     except Exception:
         return False
+
+
+import contextlib
+from pathlib import Path
+
+
+@contextlib.contextmanager
+def isolated_runtime_port():
+    """临时挪走 runtime/port，让"端口协商"在测试期间不可用。
+
+    子进程自己按包位置解析该文件路径，patch 模块属性管不到它们，
+    所以必须在文件系统层面隔离。退出时恢复原状。"""
+    p = Path(__file__).resolve().parent.parent / "runtime" / "port"
+    backup = None
+    if p.exists():
+        backup = p.with_suffix(".isolated-bak")
+        p.replace(backup)
+    try:
+        yield
+    finally:
+        if backup is not None:
+            backup.replace(p)
