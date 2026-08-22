@@ -253,25 +253,35 @@ class TestPetTurnIntegration(unittest.TestCase):
                 pet._director = TurnDirector(tau=1e-6)
                 tk_root = pet.root
                 tk_root.update()
-                cx = tk_root.winfo_rootx() + pet.size // 2
-                cy = tk_root.winfo_rooty() + pet.size // 2
+                # 钉死窗口坐标查询：CI 无头会话里 overrideredirect 窗口的
+                # winfo 值不可靠，会让方向角算错
+                tk_root.winfo_rootx = lambda: 500
+                tk_root.winfo_rooty = lambda: 500
+                cx = 500 + pet.size // 2
+                cy = 500 + pet.size // 2
 
                 cur = lambda: pet.canvas.itemcget(pet._img_id, "image")
 
-                pet._turn_step(cx, cy - 500)  # 正上 → 正面第 0 帧
+                def step_force(x, y):
+                    """清掉上一步的 key 强制重绘：隔离任何漏网的真实
+                    光标 tick 或跳变，让断言只反映本次步进的结果。"""
+                    pet._last_turn_key = None
+                    pet._turn_step(x, y)
+
+                step_force(cx, cy - 500)  # 正上 → 正面第 0 帧
                 self.assertEqual(cur(), str(pet._turn_left[0]))
 
-                pet._turn_step(cx - 500, cy)  # 正左水平 → 满姿态原始帧
+                step_force(cx - 500, cy)  # 正左水平 → 满姿态原始帧
                 self.assertEqual(cur(), str(pet._turn_left[-1]))
 
                 # 直接扫到正右：第一步先回正面（换边必须经过正面帧），
                 # 第二步才以镜像帧满姿态朝右
-                pet._turn_step(cx + 500, cy)
+                step_force(cx + 500, cy)
                 self.assertEqual(cur(), str(pet._turn_left[0]))
-                pet._turn_step(cx + 500, cy)
+                step_force(cx + 500, cy)
                 self.assertEqual(cur(), str(pet._turn_right[-1]))
 
-                pet._turn_step(cx, cy - 500)  # 回正上：先收回正面（右侧第 0 帧）
+                step_force(cx, cy - 500)  # 回正上：先收回正面（右侧第 0 帧）
                 self.assertEqual(cur(), str(pet._turn_right[0]))
         finally:
             pet._quit()
