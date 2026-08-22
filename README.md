@@ -13,6 +13,12 @@
   注入的 ActivitySource 实现。定时随机提醒（默认每 1~2 小时）+ 久坐提醒
   （连续工作超阈值）。
 - **pika-adapter-zcode**：ZCode 自动化 → 总线的适配器，一行命令发通知。
+- **pika-adapter-codex**：Codex → 总线的适配器。`event` 子命令处理
+  `agent-turn-complete` 事件 JSON（notify/hooks 均可接），弹「这轮问了什么 +
+  回答开头」；`report` 子命令与 zcode 适配器同构，供 Codex automations 汇报。
+- **pika-adapter-dsh**：DSH headless 子任务包装器。`run` 把 `dsh --profile
+  headless` 包在中间全程汇报（开始 ▶ / 完成 ✅ 带回答摘要 / 失败 ❌ 带 stderr
+  尾部），stdout 原样透传，可无脑替换直接调 dsh；`report` 子命令手动汇报。
 
 ## 快速开始
 
@@ -75,6 +81,8 @@ python -m pika.cli health   # 查看总线状态
 python -m pika.pet          # 桌宠（--subscribe-only 订阅外部总线）
 python -m pika.reminder_runner   # 健康提醒
 python -m pika.adapters.zcode <名称> --stage done --detail "说明"
+python -m pika.adapters.codex event '<JSON>'   # Codex turn-complete 事件
+python -m pika.adapters.dsh run "任务名" "任务文本"   # 包装 DSH 子任务
 python pikachu.py doctor    # 环境自检
 ```
 
@@ -135,6 +143,42 @@ python /d/_Project/pikachu/pikachu.py zcode "watch-inbox" --stage error --detail
 `--stage` 决定图标与配色：`start`(▶ 灰) / `done`(✅ 绿) / `error`(❌ 红) / `run`(▶)。
 创建自动化时把第一行放进任务开头、第二/三行按结果放在结尾即可。
 
+## Codex 集成
+
+Codex 每轮回复完成会发出 `agent-turn-complete` 事件，接法有两条路：
+
+1. **hooks（推荐）**：在 Codex 的 hooks 配置里把本脚本挂到 turn 完成事件，
+   事件 JSON 走 stdin，适配器自动解析（标题 = 会话名或本轮第一条用户输入，
+   正文 = 回答开头 160 字符）。
+2. **notify**：`~/.codex/config.toml` 的 `notify` 是单程序槽；若已被占用
+   （如 computer-use），写个两行的分发脚本先转发原有程序再调本适配器即可。
+
+```bash
+python pikachu.py codex event '{"type":"agent-turn-complete","input_messages":["审查代码"],"last_assistant_message":"发现 3 处问题……"}'
+echo '<JSON>' | python -m pika.adapters.codex event   # 也可从 stdin 读
+python pikachu.py codex report "每日简报" --stage done --detail "生成 3 个文件"
+```
+
+事件模式下总线不在也返回 0（通知钩子绝不能阻塞 Codex）；非 turn-complete
+事件安静忽略。测试见 `tests/test_adapter_codex.py`。
+
+## DSH 集成
+
+DSH 是一次性 headless agent（无钩子系统），适配器做**包装运行**——替代直接
+调 `dsh`，全程汇报且行为透明（stdout = 最终回答，退出码透传）：
+
+```bash
+python pikachu.py dsh run "调研X" "任务文本……" --cwd D:\scratch --timeout 420
+# 超长任务文本（Windows 命令行 ~32K 上限）写文件传入：
+python pikachu.py dsh run "调研X" --task-file /tmp/dsh-task.md --cwd D:\scratch
+# 手动汇报某个阶段（与 zcode 适配器同构）：
+python pikachu.py dsh report "调研X" --stage done --detail "结论：……"
+```
+
+生命周期气泡：开始 ▶（带任务摘要）→ 完成 ✅（带回答开头）或 失败 ❌（带
+退出码 + stderr 尾部）；超时返回 124，找不到 dsh 返回 4。
+测试见 `tests/test_adapter_dsh.py`（用桩可执行文件，不依赖真实 dsh）。
+
 ## 桌宠交互
 
 - 悬浮：显示状态气泡（已收通知数 / 来源统计 / 最近 3 条）；
@@ -181,7 +225,9 @@ python tools/build_turn_assets.py   # 需 PIL + scipy（如 numpy/ndimage）
 
 ```text
 adapter-zcode ─┐
-其他软件 ──────┼─► pika-bus（HTTP + SSE）─► pika-pet（桌宠）
+adapter-codex ─┤
+adapter-dsh ───┼─► pika-bus（HTTP + SSE）─► pika-pet（桌宠）
+其他软件 ──────┤
 pika-reminder ─┘
 ```
 
@@ -196,7 +242,7 @@ python -m unittest discover -s tests -v        # 单元测试
 python tests/e2e/run_all.py                     # 端到端测试（起真进程）
 ```
 
-单元测试 143 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
+单元测试 167 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
 提醒器→总线→桌宠全链路、SSE 心跳保活、跨进程总线重启恢复、GUI 悬浮绑定、
 转身朝向决策（滞回/平滑/经过正面换边）等。
 测试全部使用随机端口，不依赖 8765 未被占用。

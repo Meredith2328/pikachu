@@ -8,6 +8,8 @@
     python pikachu.py send "标题" "正文" [--level info] [--port 8765]
     python pikachu.py history / health
     python pikachu.py zcode <名称> [--stage start|done|error] [--detail 说明]
+    python pikachu.py codex event '<JSON>' / codex report <名称> [--stage ...]
+    python pikachu.py dsh run <名称> --cwd <目录> --timeout 420 -- "任务文本"
     python pikachu.py doctor       # 环境自检
 """
 import argparse
@@ -110,6 +112,13 @@ def build_parser():
                      default="done")
     p_z.add_argument("--detail", default="")
     p_z.add_argument("--port", type=int, default=8765)
+
+    # codex / dsh 适配器有自己的子命令（event/report、run/report），
+    # 顶层只做透传，参数由适配器自己解析
+    sub.add_parser("codex", help="Codex 通知适配器（event/report）") \
+       .add_argument("rest", nargs=argparse.REMAINDER)
+    sub.add_parser("dsh", help="DSH 子任务包装器（run/report）") \
+       .add_argument("rest", nargs=argparse.REMAINDER)
     return p
 
 
@@ -148,6 +157,12 @@ def main(argv=None) -> int:
                       "--stage", args.stage,
                       "--detail", args.detail,
                       "--port", str(args.port)])
+    if args.command == "codex":
+        from pika.adapters.codex import main as cmain
+        return cmain(args.rest)
+    if args.command == "dsh":
+        from pika.adapters.dsh import main as dmain
+        return dmain(args.rest)
     return 2
 
 
