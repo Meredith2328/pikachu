@@ -80,12 +80,14 @@ def read_payload(argv_payload):
 
 
 def _report_main(args) -> int:
-    stage_style = {"start": ("info", "▶"), "done": ("success", "✅"),
-                   "error": ("error", "❌"), "run": ("info", "▶")}
-    level = args.level or stage_style[args.stage][0]
-    lines = [f"阶段：{args.stage}"] + ([args.detail] if args.detail else [])
-    n = Notification(title=f"{stage_style[args.stage][1]} Codex：{args.name}",
-                     body="\n".join(lines), level=level,
+    # 标题统一为「{事件词} · {名称}」，与 zcode/dsh 适配器同构
+    stage_word = {"start": "开始", "done": "完成",
+                  "error": "失败", "run": "进行中"}
+    stage_level = {"start": "info", "done": "success",
+                   "error": "error", "run": "info"}
+    level = args.level or stage_level[args.stage]
+    n = Notification(title=f"{stage_word[args.stage]} · {args.name}",
+                     body=args.detail or "", level=level,
                      source=args.source, ttl=args.ttl)
     try:
         resp = bus.send_notification(n, port=args.port)
@@ -140,7 +142,8 @@ def main(argv=None) -> int:
     if parsed is None:
         return 0  # 非 turn-complete 事件：忽略
     title, body, level = parsed
-    n = Notification(title=f"✅ Codex：{title}", body=body or "回复完成",
+    # 与 zcode Stop 钩子的「会话完成 · 标题」同构，来源走 meta 行
+    n = Notification(title=f"会话完成 · {title}", body=body or "回复完成",
                      level=level, source=args.source, ttl=args.ttl)
     try:
         resp = bus.send_notification(n, port=args.port)

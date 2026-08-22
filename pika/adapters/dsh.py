@@ -53,12 +53,14 @@ def _send(notif, port, fatal=False) -> bool:
 
 
 def _report_main(args) -> int:
-    stage_style = {"start": ("info", "▶"), "done": ("success", "✅"),
-                   "error": ("error", "❌"), "run": ("info", "▶")}
-    level = args.level or stage_style[args.stage][0]
-    lines = [f"阶段：{args.stage}"] + ([args.detail] if args.detail else [])
-    n = Notification(title=f"{stage_style[args.stage][1]} DSH：{args.name}",
-                     body="\n".join(lines), level=level,
+    # 标题统一为「{事件词} · {名称}」，与 zcode/codex 适配器同构
+    stage_word = {"start": "开始", "done": "完成",
+                  "error": "失败", "run": "进行中"}
+    stage_level = {"start": "info", "done": "success",
+                   "error": "error", "run": "info"}
+    level = args.level or stage_level[args.stage]
+    n = Notification(title=f"{stage_word[args.stage]} · {args.name}",
+                     body=args.detail or "", level=level,
                      source=args.source, ttl=args.ttl)
     ok = _send(n, args.port)
     if not ok:
@@ -81,7 +83,7 @@ def run_wrapped(args) -> int:
         return 2
 
     cmd = [args.dsh_exe, "--profile", args.profile, task]
-    _send(Notification(title=f"▶ DSH 子任务：{args.name}",
+    _send(Notification(title=f"开始 · {args.name}",
                        body=collapse(task, SNIPPET_LEN), level="info",
                        source=args.source, ttl=args.ttl), args.port)
 
@@ -91,13 +93,13 @@ def run_wrapped(args) -> int:
             capture_output=True, text=True,
             encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        _send(Notification(title=f"❌ DSH 子任务：{args.name}",
+        _send(Notification(title=f"失败 · {args.name}",
                            body=f"找不到可执行文件：{args.dsh_exe}",
                            level="error", source=args.source, ttl=args.ttl),
               args.port)
         return 4
     except subprocess.TimeoutExpired:
-        _send(Notification(title=f"❌ DSH 子任务：{args.name}",
+        _send(Notification(title=f"失败 · {args.name}",
                            body=f"超时（>{args.timeout}s）被终止",
                            level="error", source=args.source, ttl=args.ttl),
               args.port)
@@ -110,11 +112,13 @@ def run_wrapped(args) -> int:
     if proc.returncode == 0 and proc.stdout.strip():
         body = collapse(proc.stdout, SNIPPET_LEN) or "（空输出）"
         level = "success"
+        word = "完成"
     else:
         tail = collapse((proc.stderr or "").strip()[-ERR_TAIL_LEN:], ERR_TAIL_LEN)
         body = (f"退出码 {proc.returncode}\n{tail}").strip()
         level = "error"
-    _send(Notification(title=f"{'✅' if level == 'success' else '❌'} DSH 子任务：{args.name}",
+        word = "失败"
+    _send(Notification(title=f"{word} · {args.name}",
                        body=body, level=level, source=args.source, ttl=args.ttl),
           args.port)
     return proc.returncode

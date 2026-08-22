@@ -203,6 +203,7 @@ class TestMainAssembly(unittest.TestCase):
         self.assertEqual(sent[0].title, "会话完成 · abcdef12")
         self.assertEqual(sent[0].body, "完成 了 三件事")
         self.assertEqual(sent[0].source, "zcode")
+        self.assertEqual(sent[0].level, "success")  # 与 codex 事件统一
 
     def test_garbage_stdin_still_exits_zero_without_send(self):
         code, sent = self._run_main("not json at all")

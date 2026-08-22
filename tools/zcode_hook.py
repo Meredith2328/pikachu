@@ -218,7 +218,8 @@ def main(argv=None) -> int:
     body = snippet or "（未读取到进展内容）"
     try:
         send_notification(
-            Notification(title=title, body=body, source="zcode", ttl=12.0))
+            Notification(title=title, body=body, level="success",
+                         source="zcode", ttl=12.0))
     except Exception:
         pass  # 总线不在/网络失败：钩子静默通过
     return 0  # 无论成败都让钩子通过

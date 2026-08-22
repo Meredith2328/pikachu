@@ -40,8 +40,13 @@ def wait_http(port, timeout=8):
 
 class TestZcodeAdapterUnit(unittest.TestCase):
     def test_title_stage(self):
-        self.assertIn("自动化：x", _title(type("A", (), {"stage": "done", "name": "x"})))
-        self.assertIn("❌", _title(type("A", (), {"stage": "error", "name": "x"})))
+        """标题统一语法：「{事件词} · {名称}」，不放 emoji。"""
+        self.assertEqual("完成 · x",
+                         _title(type("A", (), {"stage": "done", "name": "x"})))
+        self.assertEqual("失败 · x",
+                         _title(type("A", (), {"stage": "error", "name": "x"})))
+        self.assertEqual("开始 · x",
+                         _title(type("A", (), {"stage": "start", "name": "x"})))
 
     def test_body(self):
         a = type("A", (), {"stage": "done", "detail": "生成 3 个文件"})

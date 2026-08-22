@@ -17,8 +17,13 @@
   `agent-turn-complete` 事件 JSON（notify/hooks 均可接），弹「这轮问了什么 +
   回答开头」；`report` 子命令与 zcode 适配器同构，供 Codex automations 汇报。
 - **pika-adapter-dsh**：DSH headless 子任务包装器。`run` 把 `dsh --profile
-  headless` 包在中间全程汇报（开始 ▶ / 完成 ✅ 带回答摘要 / 失败 ❌ 带 stderr
-  尾部），stdout 原样透传，可无脑替换直接调 dsh；`report` 子命令手动汇报。
+  headless` 包在中间全程汇报（「开始 · 任务」带任务摘要 → 「完成 · 任务」带回答
+  摘要或「失败 · 任务」带 stderr 尾部），stdout 原样透传，可无脑替换直接调
+  dsh；`report` 子命令手动汇报。
+- **统一标题语法**：所有适配器的气泡标题都是「{事件词} · {名称}」——会话完成
+  类（zcode Stop 钩子、codex turn-complete）为「会话完成 · 标题」，阶段类为
+  「开始/进行中/完成/失败 · 名称」；标题不放 emoji，级别语义由气泡徽章与
+  配色表达，来源显示在 meta 行。
 
 ## 快速开始
 
@@ -140,7 +145,8 @@ python /d/_Project/pikachu/pikachu.py zcode "每日简报" --stage done --detail
 python /d/_Project/pikachu/pikachu.py zcode "watch-inbox" --stage error --detail "权限不足"
 ```
 
-`--stage` 决定图标与配色：`start`(▶ 灰) / `done`(✅ 绿) / `error`(❌ 红) / `run`(▶)。
+`--stage` 决定标题事件词与配色：`start`(开始 · info) / `done`(完成 · success) /
+`error`(失败 · error) / `run`(进行中 · info)。
 创建自动化时把第一行放进任务开头、第二/三行按结果放在结尾即可。
 
 ## Codex 集成
@@ -148,8 +154,8 @@ python /d/_Project/pikachu/pikachu.py zcode "watch-inbox" --stage error --detail
 Codex 每轮回复完成会发出 `agent-turn-complete` 事件，接法有两条路：
 
 1. **hooks（推荐）**：在 Codex 的 hooks 配置里把本脚本挂到 turn 完成事件，
-   事件 JSON 走 stdin，适配器自动解析（标题 = 会话名或本轮第一条用户输入，
-   正文 = 回答开头 160 字符）。
+   事件 JSON 走 stdin，适配器自动解析（标题 = 「会话完成 · 会话名或本轮
+   第一条用户输入」，正文 = 回答开头 160 字符，与 zcode Stop 钩子同构）。
 2. **notify**：`~/.codex/config.toml` 的 `notify` 是单程序槽；若已被占用
    （如 computer-use），写个两行的分发脚本先转发原有程序再调本适配器即可。
 
@@ -175,8 +181,8 @@ python pikachu.py dsh run "调研X" --task-file /tmp/dsh-task.md --cwd D:\scratc
 python pikachu.py dsh report "调研X" --stage done --detail "结论：……"
 ```
 
-生命周期气泡：开始 ▶（带任务摘要）→ 完成 ✅（带回答开头）或 失败 ❌（带
-退出码 + stderr 尾部）；超时返回 124，找不到 dsh 返回 4。
+生命周期气泡：「开始 · 任务名」（带任务摘要）→「完成 · 任务名」（带回答开头）
+或「失败 · 任务名」（带退出码 + stderr 尾部）；超时返回 124，找不到 dsh 返回 4。
 测试见 `tests/test_adapter_dsh.py`（用桩可执行文件，不依赖真实 dsh）。
 
 ## 桌宠交互

@@ -19,26 +19,23 @@ import sys
 from .. import bus
 from ..protocol import Notification
 
+# 阶段 → （级别，中文事件词）。标题统一为「{事件词} · {名称}」，
+# 级别的视觉语义由气泡徽章/配色表达，标题不再放 emoji
 STAGE_STYLE = {
-    "start": ("info", "▶"),
-    "done": ("success", "✅"),
-    "error": ("error", "❌"),
-    "run": ("info", "▶"),
+    "start": ("info", "开始"),
+    "done": ("success", "完成"),
+    "error": ("error", "失败"),
+    "run": ("info", "进行中"),
 }
 
 
 def _title(args) -> str:
-    prefix = STAGE_STYLE.get(args.stage, ("info", "▶"))[1]
-    return f"{prefix} 自动化：{args.name}"
+    word = STAGE_STYLE.get(args.stage, ("info", "进行中"))[1]
+    return f"{word} · {args.name}"
 
 
 def _body(args) -> str:
-    lines = []
-    if args.stage:
-        lines.append(f"阶段：{args.stage}")
-    if args.detail:
-        lines.append(args.detail)
-    return "\n".join(lines)
+    return args.detail or ""
 
 
 def main(argv=None) -> int:
