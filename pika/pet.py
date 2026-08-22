@@ -31,6 +31,7 @@ except ImportError:
     tkfont = None
 
 from . import bus
+from . import pet_state
 from .pet_core import PetController
 from .protocol import Notification
 from .turn import TurnDirector, frame_index, get_cursor_pos, turn_frame_paths
@@ -511,8 +512,10 @@ class PikaPet:
         self.root.configure(bg=BG)
 
         self.size = 180
-        self.scale = 1.0            # 桌宠缩放：影响画布/贴图/窗口尺寸
-        self.bubble_scale = 1.0     # 气泡缩放：影响气泡字号/内距/尾巴
+        # 状态持久化：缩放 / 静音 / 位置从上次会话恢复（损坏则回默认）
+        _state = pet_state.load_state()
+        self.scale = _state["scale"]        # 桌宠缩放：影响画布/贴图/窗口尺寸
+        self.bubble_scale = _state["bubble_scale"]  # 气泡缩放：字号/内距/尾巴
         self.canvas = tk.Canvas(self.root, width=self.size, height=self.size,
                                 bg=BG, highlightthickness=0)
         self.canvas.pack()
@@ -529,12 +532,19 @@ class PikaPet:
         self._load_asset()
         w = self.root.winfo_screenwidth()
         h = self.root.winfo_screenheight()
-        self.root.geometry(f"+{w - self.canvas_w - 20}+{h - self.canvas_h - 60}")
+        if _state["x"] is not None and _state["y"] is not None:
+            # 钳回屏幕内（分辨率变了/拔了显示器时不能把桌宠放到屏幕外）
+            x = max(0, min(int(_state["x"]), w - self.canvas_w))
+            y = max(0, min(int(_state["y"]), h - self.canvas_h))
+            self.root.geometry(f"+{x}+{y}")
+        else:
+            self.root.geometry(f"+{w - self.canvas_w - 20}+{h - self.canvas_h - 60}")
 
         # 控制器：显示决策全部在 PetController，UI 只挂回调
         self._controller = PetController(
             on_show=lambda n: self.root.after(0, lambda: self._bubble_show(n)),
             on_hide=lambda: self.root.after(0, self._bubble_hide))
+        self._controller.muted = _state["muted"]
         self.bubble = Bubble(self.root, on_clicked=self._bubble_click,
                              controller=self._controller, pet=self)
         self.menu = PikaMenu(self.root)
@@ -789,6 +799,18 @@ class PikaPet:
         # 桌宠尺寸变了：气泡跟着重定位（仍贴脑袋）
         if getattr(self, "bubble", None) is not None:
             self.bubble.reposition()
+        self._save_state("scale")
+
+    def _save_state(self, *fields):
+        """把指定字段落盘（拖动结束时存位置、缩放/静音变化时存对应项）。"""
+        mapping = {
+            "scale": lambda: self.scale,
+            "bubble_scale": lambda: self.bubble_scale,
+            "muted": lambda: self._controller.muted,
+            "x": lambda: self.root.winfo_x(),
+            "y": lambda: self.root.winfo_y(),
+        }
+        pet_state.save_state(**{f: mapping[f]() for f in fields if f in mapping})
 
 
 
@@ -874,6 +896,8 @@ class PikaPet:
             self.menu.reposition(self.menu._anchor_x + dx, self.menu._anchor_y + dy)
 
     def _on_release(self, e):
+        if self._moved:
+            self._save_state("x", "y")   # 拖完才落盘，拖动过程不写
         self._press = None
 
     def _on_wheel(self, e):
@@ -932,6 +956,7 @@ class PikaPet:
         if self.bubble.visible:
             self.bubble.show(self.bubble._last_notif,
                              kind=self.bubble.kind)
+        self._save_state("bubble_scale")
 
     def _manual_remind(self):
         n = Notification(title="该休息一下了",
@@ -941,6 +966,7 @@ class PikaPet:
 
     def _toggle_mute(self):
         muted = self._controller.toggle_mute()
+        self._save_state("muted")
         n = Notification(title="🔇 已静音" if muted else "🔊 已取消静音",
                          body="静音期间消息只记录、不弹气泡。" if muted else "新消息会正常弹出。",
                          level="info", source="pika", ttl=6)
@@ -999,6 +1025,10 @@ class PikaPet:
             self.sse.stop()
         if self.server is not None:
             self.server.stop()
+        try:
+            self._save_state("x", "y")   # 退出前存最后位置
+        except Exception:
+            pass
         self.root.destroy()
 
     def mainloop(self):
