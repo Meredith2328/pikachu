@@ -95,6 +95,12 @@ class BusHandler(BaseHTTPRequestHandler):
         if parsed.path != "/notify":
             self._send_json(404, {"ok": False, "error": f"未知路径 {parsed.path}"})
             return
+        # token 鉴权：只有能读到 runtime/token 的己方工具（CLI/适配器/
+        # 钩子，均自动附带）才能投递；其他进程的误投/端口撞车直接拒绝
+        if (self.headers.get("X-Pika-Token") or "") != self.bus.token:
+            self._send_json(403, {"ok": False,
+                                  "error": "缺少或错误的 X-Pika-Token 头"})
+            return
         # 只接受 JSON：挡掉浏览器表单式(text/plain)简单请求的误投
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
@@ -204,6 +210,7 @@ class BusServer:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT):
         self.host = host
         self.port = port
+        self.token = _load_or_create_token()
         self._history: list = []          # [(id, Notification)]
         self._subscribers: set = set()    # {queue.Queue}
         self._lock = threading.Lock()
@@ -336,6 +343,38 @@ def _url(port: int, host: str = DEFAULT_HOST, path: str = "/") -> str:
 # 发送方连接失败后读它重试一次，适配器链不再被回退打断。
 RUNTIME_PORT_FILE = Path(__file__).resolve().parent.parent / "runtime" / "port"
 
+# 投递鉴权：runtime/token 里存一串运行时随机生成的密钥（首次启动生成，
+# 绝不进仓库/源码）。总线要求 POST /notify 携带 X-Pika-Token 头与之
+# 相符；己方发送方（CLI/适配器/钩子）读同一文件自动附带，对用户无感。
+# 它挡的是误投和端口撞车，不是同用户恶意进程（那读得到文件）。
+TOKEN_FILE = Path(__file__).resolve().parent.parent / "runtime" / "token"
+
+
+def _load_or_create_token() -> str:
+    """读 token 文件；没有或过短则生成新的写回（幂等）。"""
+    try:
+        t = TOKEN_FILE.read_text(encoding="utf-8").strip()
+        if len(t) >= 32:
+            return t
+    except Exception:
+        pass
+    import secrets
+    t = secrets.token_hex(32)
+    try:
+        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        TOKEN_FILE.write_text(t, encoding="utf-8")
+    except Exception:
+        pass  # 写盘失败（只读目录等）：本进程内仍可用
+    return t
+
+
+def _client_token():
+    """发送方读 token；读不到返回 None（不附带，由服务端裁决）。"""
+    try:
+        return TOKEN_FILE.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        return None
+
 
 def _fallback_port():
     try:
@@ -351,14 +390,17 @@ def send_notification(notif: Notification, port: int = DEFAULT_PORT,
                       host: str = DEFAULT_HOST, timeout: float = 5.0) -> dict:
     """POST 一条消息到总线，返回总线响应 JSON。
 
+    自动附带 X-Pika-Token（读 runtime/token，与服务端同源）；
     目标端口连不上时读 runtime/port（桌宠端口回退时写入的实际端口）
     重试一次；服务明确拒绝（HTTP 4xx/5xx）不换端口重试。"""
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    tok = _client_token()
+    if tok:
+        headers["X-Pika-Token"] = tok
     try:
         return _http_json(port, host, "POST", "/notify",
                           body=notif.to_json().encode("utf-8"),
-                          headers={"Content-Type":
-                                   "application/json; charset=utf-8"},
-                          timeout=timeout)
+                          headers=headers, timeout=timeout)
     except urllib.error.HTTPError:
         raise  # 服务在但拒绝：协议层问题，换端口无意义
     except Exception:
@@ -366,9 +408,7 @@ def send_notification(notif: Notification, port: int = DEFAULT_PORT,
         if fb is not None and fb != port:
             return _http_json(fb, host, "POST", "/notify",
                               body=notif.to_json().encode("utf-8"),
-                              headers={"Content-Type":
-                                       "application/json; charset=utf-8"},
-                              timeout=timeout)
+                              headers=headers, timeout=timeout)
         raise
 
 

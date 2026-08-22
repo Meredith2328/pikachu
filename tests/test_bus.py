@@ -48,7 +48,8 @@ class TestBusHttp(BusTestCase):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/notify",
             data=b'{"title": 123}',
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     "X-Pika-Token": self.bus.token},
             method="POST")
         import urllib.error
         with self.assertRaises(urllib.error.HTTPError) as ctx:
@@ -115,6 +116,46 @@ class TestBusSse(BusTestCase):
         finally:
             client.stop()
             client.join()
+
+
+class TestTokenAuth(BusTestCase):
+    """投递鉴权：POST /notify 必须携带与服务端一致的 X-Pika-Token。"""
+
+    def _post(self, headers_extra, payload=b'{"title":"t"}'):
+        import urllib.error
+        from pika import bus as bus_mod
+        try:
+            body = bus_mod._http_json(
+                self.port, "127.0.0.1", "POST", "/notify", body=payload,
+                headers={"Content-Type": "application/json", **headers_extra},
+                timeout=3)
+            return 200, body
+        except urllib.error.HTTPError as e:
+            return e.code, {}
+
+    def test_missing_token_403(self):
+        code, _ = self._post({})
+        self.assertEqual(code, 403)
+        # 被拒的消息不能进历史
+        self.assertFalse(any(i["title"] == "t"
+                             for i in fetch_history(port=self.port)))
+
+    def test_wrong_token_403(self):
+        import secrets
+        code, _ = self._post({"X-Pika-Token": secrets.token_hex(32)})
+        self.assertEqual(code, 403)
+
+    def test_correct_token_accepted(self):
+        code, body = self._post({"X-Pika-Token": self.bus.token})
+        self.assertEqual(code, 200)
+        self.assertTrue(body.get("ok"))
+
+    def test_send_notification_attaches_token(self):
+        """己方入口 send_notification 自动附带 token，用户无感。"""
+        send_notification(Notification(title="auto-token"),
+                          port=self.port)
+        items = fetch_history(port=self.port)
+        self.assertEqual(items[-1]["title"], "auto-token")
 
 
 class TestPortNegotiation(BusTestCase):
@@ -361,9 +402,10 @@ class TestBusContentType(unittest.TestCase):
             import urllib.error
             req = urllib.request.Request(
                 f"http://127.0.0.1:{b.port}/notify",
-                data=b'{"title":"x"}',
-                headers={"Content-Type": "text/plain"},
-                method="POST")
+            data=b'{"title":"x"}',
+            headers={"Content-Type": "text/plain",
+                     "X-Pika-Token": b.token},
+            method="POST")
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 urllib.request.urlopen(req, timeout=3)
             self.assertEqual(ctx.exception.code, 415)

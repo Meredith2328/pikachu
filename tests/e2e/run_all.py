@@ -57,11 +57,23 @@ def wait_until(pred, timeout=10, interval=0.1):
     return False
 
 
+def http_post_headers():
+    headers = {"Content-Type": "application/json"}
+    try:
+        from pika.bus import _client_token
+        tok = _client_token()
+        if tok:
+            headers["X-Pika-Token"] = tok
+    except Exception:
+        pass
+    return headers
+
+
 def http_post(port, payload):
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/notify",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers=http_post_headers(), method="POST")
     with urllib.request.urlopen(req, timeout=5) as r:
         return json.loads(r.read().decode("utf-8"))
 

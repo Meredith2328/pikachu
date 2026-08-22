@@ -47,13 +47,20 @@ python pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件
 
 ## 消息协议
 
-任何软件（不限 Python）向总线 POST（必须 `Content-Type: application/json`）：
+任何软件（不限 Python）向总线 POST（必须 `Content-Type: application/json`，
+并携带 `X-Pika-Token` 头——值在 `runtime/token`，首次启动自动生成）：
 
 ```bash
 curl -X POST http://127.0.0.1:7452/notify \
   -H "Content-Type: application/json" \
+  -H "X-Pika-Token: $(cat runtime/token)" \
   -d '{"title":"该休息了","body":"起来走走","level":"warn","source":"reminder","ttl":10}'
 ```
+
+token 鉴权说明：CLI / 适配器 / 钩子等**己方工具自动附带** token，用户无感；
+未携带或携带错误 token 的 POST 返回 403。它挡的是本机其他进程的误投和
+端口撞车，不是同用户恶意进程的防线（后者读得到 token 文件）。GET 类
+端点（health/history/SSE）不鉴权，只读无害。
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
