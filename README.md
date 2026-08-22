@@ -1,4 +1,6 @@
-# ⚡ 皮卡丘
+# ⚡ 皮卡丘：一个统一的通知用桌宠
+
+<img width="449" height="453" alt="image" src="https://github.com/user-attachments/assets/66887430-66e8-4325-a0cd-bb73c21a2009" />
 
 本地通知总线 + 桌宠气泡 + 健康提醒。三块互相独立、可单独使用，只通过一条
 消息协议（`pika.protocol.Notification`）通信。
@@ -11,8 +13,6 @@
   注入的 ActivitySource 实现。定时随机提醒（默认每 1~2 小时）+ 久坐提醒
   （连续工作超阈值）。
 - **pika-adapter-zcode**：ZCode 自动化 → 总线的适配器，一行命令发通知。
-
-目录完全不依赖 codex / 旧皮卡丘，只有 `assets/` 三张贴图来自旧桌宠素材。
 
 ## 快速开始
 
