@@ -166,6 +166,7 @@ class PikaPet:
         # 此前提醒器是独立进程，忘了启动就等于没有（日志里 8/19 后就没跑过）
         self._reminder_stop = None
         self._reminder_thread = None
+        self._scheduler = None   # 提醒调度器（供菜单"立即提醒"取文案）
         if with_reminder:
             self._start_reminder()
 
@@ -193,6 +194,8 @@ class PikaPet:
         scheduler = ReminderScheduler(
             activity=WinIdleSource(), sink=self._reminder_sink(),
             config=cfg)
+        # 存下来：右键菜单的"立即提醒"要用它的文案池，不再写死一句假消息
+        self._scheduler = scheduler
         stop = threading.Event()
 
         def loop():
@@ -232,6 +235,7 @@ class PikaPet:
         if self._reminder_thread is not None:
             self._reminder_thread.join(timeout=2.0)
         self._reminder_thread = None
+        self._scheduler = None
 
     # ---- 总线连接 ----
     def _connect(self, port: int, subscribe_only: bool):
@@ -616,10 +620,12 @@ class PikaPet:
 
     # ---- 右键菜单 ----
     def _menu(self, e):
+        # 菜单文案反映当前状态：以前一律显示"静音开关"，看不出此刻是开还是关
         self.menu.set_items([
             ("显示状态", self._status_show),
             ("立即提醒休息一次", self._manual_remind),
-            ("静音开关", self._toggle_mute),
+            ("取消静音" if self._controller.muted else "静音",
+             self._toggle_mute),
             ("放大桌宠", lambda: self._zoom_pet(0.25)),
             ("缩小桌宠", lambda: self._zoom_pet(-0.25)),
             ("放大气泡", lambda: self._zoom_bubble(0.25)),
@@ -641,10 +647,20 @@ class PikaPet:
         self._save_state("bubble_scale")
 
     def _manual_remind(self):
-        n = Notification(title="该休息一下了",
-                         body="手动提醒：站起来走两步，看看窗外。",
-                         level="warn", source="reminder", ttl=12)
-        self._controller.handle(n)
+        """立即来一条真实提醒：走调度器的文案池，不是写死的假消息。
+
+        以前这里 hardcode 一句"站起来走两步"，于是菜单里的"立即提醒"和
+        真正的定时提醒长得不一样，也测不到文案池。现在从调度器取——没有
+        调度器（--no-reminder）时才退回一句固定文案，并说明原因。
+        """
+        if self._scheduler is not None:
+            body = self._scheduler.manual_body()
+            title = self._scheduler.config.title
+        else:
+            title = "该休息一下了"
+            body = "站起来走两步，看看窗外。（提醒调度未启用）"
+        self._controller.handle(Notification(
+            title=title, body=body, level="warn", source="reminder", ttl=12))
 
     def _toggle_mute(self):
         muted = self._controller.toggle_mute()

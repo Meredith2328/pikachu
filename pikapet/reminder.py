@@ -160,6 +160,15 @@ class ReminderScheduler:
                     self._next_interval_at = new_interval_at
         return sent_now
 
+    # ---- 手动触发 ----
+    def manual_body(self) -> str:
+        """给"用户主动要一条提醒"用的正文：从 interval 通道的文案池里挑。
+
+        不碰任何调度状态（不重置久坐累计、也不推进下次定时时刻）——用户
+        点一下菜单不该影响自动提醒的节奏。
+        """
+        return self._pick(self.config.categories)
+
     # ---- 内部 ----
     def _try_send(self, now: float, body: str, sent_now: list) -> bool:
         """发一条提醒。失败返回 False 交给上层退避重试，并记 WARNING。
