@@ -430,5 +430,38 @@ class TestProtocolValidationOnBus(BusTestCase):
             Notification.from_dict({"level": "info"})
 
 
+class TestBusMainBindFailure(unittest.TestCase):
+    """standalone 入口绑定失败时要打提示并返回 1，而不是自己炸掉。
+
+    这条路径此前引用了未 import 的 sys，只在真实绑定失败时才走到，
+    测试没覆盖——补一条防回归。注意不能用"再绑一次同端口"来构造失败：
+    ThreadingHTTPServer 开了 allow_reuse_address，Windows 上会绑成功，
+    main 就进了常驻循环。这里直接让 start 抛 OSError。"""
+
+    def test_main_reports_bind_failure(self):
+        import contextlib
+        import io
+        from pika import bus as bus_mod
+
+        class _FailingServer:
+            def __init__(self, host=None, port=None):
+                pass
+
+            def start(self):
+                raise OSError("模拟绑定失败")
+
+        orig = bus_mod.BusServer
+        bus_mod.BusServer = _FailingServer
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = bus_mod.main(["--port", "7452"])
+        finally:
+            bus_mod.BusServer = orig
+        self.assertEqual(rc, 1)
+        self.assertIn("7452", err.getvalue())
+        self.assertIn("模拟绑定失败", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
