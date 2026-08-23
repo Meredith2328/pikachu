@@ -1,6 +1,6 @@
 # ⚡ 皮卡丘：一个统一的通知用桌宠
 
-<img width="449" height="453" alt="image" src="https://github.com/user-attachments/assets/66887430-66e8-4325-a0cd-bb73c21a2009" />
+<img width="362" height="529" alt="image" src="https://github.com/user-attachments/assets/a73f8905-01fa-419b-9935-9816542f2254" />
 
 本地通知总线 + 桌宠气泡 + 健康提醒。三块互相独立、可单独使用，只通过一条
 消息协议（`pikapet.protocol.Notification`）通信。
