@@ -278,21 +278,18 @@ class TestConfigValidation(unittest.TestCase):
     def _load(self, **overrides):
         import json
         import tempfile
+        from pathlib import Path
         base = {
             "interval_min": 60, "interval_max": 120,
             "long_session_min": 90, "rest_min": 5,
             "categories": ["eye", "neck"], "long_categories": ["stand"],
         }
         base.update(overrides)
-        fd, path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(base, f)
-        try:
+        with tempfile.TemporaryDirectory(prefix="pika-cfg-") as td:
+            path = Path(td) / "reminder.json"
+            path.write_text(json.dumps(base), encoding="utf-8")
             from pika.reminder_runner import load_config
-            return load_config(path)
-        finally:
-            os.unlink(path)
+            return load_config(str(path))
 
     def test_valid_config(self):
         cfg = self._load()

@@ -60,31 +60,27 @@ class TestCli(unittest.TestCase):
 
     def test_reminder_once_bus_down_nonzero(self):
         """--once 遇到总线不可达：应退避重试后非零退出，不静默返回 0。"""
-        import tempfile
         import json
-        fd, fake = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        with open(fake, "w", encoding="utf-8") as f:
-            json.dump({"idle_minutes": 0}, f)
-        fd2, cfg = tempfile.mkstemp(suffix=".json")
-        os.close(fd2)
-        with open(cfg, "w", encoding="utf-8") as f:
+        import tempfile
+        from pathlib import Path
+        from tests.helpers import isolated_runtime_port
+        with tempfile.TemporaryDirectory(prefix="pika-cli-") as td:
+            fake = Path(td) / "activity.json"
+            fake.write_text(json.dumps({"idle_minutes": 0}), encoding="utf-8")
+            cfg = Path(td) / "reminder.json"
             # 短间隔：几步内就触发发送，从而暴露总线不可达
-            json.dump({"interval_min": 0.001, "interval_max": 0.001,
-                       "long_session_enabled": False,
-                       "categories": ["eye"]}, f)
-        try:
-            from tests.helpers import isolated_runtime_port
+            cfg.write_text(json.dumps({
+                "interval_min": 0.001, "interval_max": 0.001,
+                "long_session_enabled": False,
+                "categories": ["eye"]}), encoding="utf-8")
             with isolated_runtime_port():
                 r = subprocess.run(
                     [PY, "-m", "pika.reminder_runner", "--once", "--port", "1",
-                     "--fake", fake, "--config", cfg, "--interval", "0.05"],
+                     "--fake", str(fake), "--config", str(cfg),
+                     "--interval", "0.05"],
                     cwd=ROOT, capture_output=True, text=True, timeout=30)
             self.assertNotEqual(r.returncode, 0, "总线故障应非零退出")
             self.assertTrue(r.stderr.strip(), "应打印失败原因")
-        finally:
-            os.unlink(fake)
-            os.unlink(cfg)
 
 
 if __name__ == "__main__":

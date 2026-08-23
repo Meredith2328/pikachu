@@ -12,20 +12,26 @@
     python -m pika.bus --port 7452 --port-file runtime/port
 """
 import argparse
+import http.client
 import json
 import os
 import queue
 import re
+import secrets
 import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import paths
+from .logs import configure as configure_logging
+from .logs import get_logger, swallow
 from .protocol import Notification, ProtocolError, PROTOCOL_VERSION
+
+log = get_logger("bus")
 
 DEFAULT_HOST = "127.0.0.1"
 # 7452 = PIKA 的手机九键键序（P=7 I=4 K=5 A=2），刻意挑的冷门端口，
@@ -33,6 +39,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 7452
 SSE_HEARTBEAT = 15.0
 SSE_REPLAY_LIMIT = 200  # 与历史容量一致：增量补拉不因回放窗口丢消息
+MIN_TOKEN_LEN = 32      # 短于此视为损坏，重新生成
+HISTORY_LIMIT = 200     # 总线保留的历史条数（= SSE 回放窗口）
+MAX_BODY_BYTES = 1_000_000
 # 哨兵：队列里出现特殊 mid 表示"连接被踢出 / 总线停机"，handler 收到后退出
 SENTINEL_KICK = "__kick__"
 SENTINEL_STOP = "__stop__"
@@ -51,11 +60,14 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def handle_error(self, request, client_address):
-        import traceback
-        exc = traceback.format_exc()
-        # 客户端断连/重置是常态，只打一行摘要，不刷堆栈
-        short = exc.strip().splitlines()[-1] if exc.strip() else "?"
-        print(f"[pika-bus] 连接异常 {client_address}: {short}")
+        # 客户端断连/重置是常态，按 DEBUG 记一行摘要，不刷堆栈；
+        # 其余异常带 traceback 记 WARNING，便于事后定位
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                            ConnectionAbortedError, TimeoutError)):
+            log.debug("客户端 %s 断开连接：%s", client_address, exc)
+            return
+        log.warning("处理 %s 的请求时异常", client_address, exc_info=True)
 
 
 class BusHandler(BaseHTTPRequestHandler):
@@ -69,8 +81,9 @@ class BusHandler(BaseHTTPRequestHandler):
         return self.server.bus
 
     def log_message(self, fmt, *args):
-        # 静默访问日志：总线不该把每条请求都打到 stderr
-        pass
+        # 访问日志走 DEBUG：总线不该把每条请求都打到 stderr，
+        # 但排查时能用 PIKACHU_LOG_LEVEL=DEBUG 全部看到
+        log.debug("%s - %s", self.address_string(), fmt % args)
 
     def _send_json(self, code: int, obj: dict):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -112,7 +125,7 @@ class BusHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"ok": False, "error": "Content-Length 非法"})
             return
-        if length <= 0 or length > 1_000_000:
+        if length <= 0 or length > MAX_BODY_BYTES:
             self._send_json(400, {"ok": False, "error": "请求体长度非法"})
             return
         raw = self.rfile.read(length)
@@ -136,10 +149,15 @@ class BusHandler(BaseHTTPRequestHandler):
 
     def _handle_history(self, query: str):
         qs = urllib.parse.parse_qs(query)
+        raw = qs.get("n", ["20"])[0]
         try:
-            n = max(1, min(int(qs.get("n", ["20"])[0]), 200))
+            n = int(raw)
         except ValueError:
-            n = 20
+            # 不静默退回 20：调用方写错了参数，应当知道
+            self._send_json(400, {"ok": False,
+                                  "error": f"n 必须是整数，收到 {raw!r}"})
+            return
+        n = max(1, min(n, HISTORY_LIMIT))
         items = [n.to_dict() for _, n in self.bus.history(n)]
         self._send_json(200, {"ok": True, "count": len(items), "items": items})
 
@@ -153,10 +171,16 @@ class BusHandler(BaseHTTPRequestHandler):
         """
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         after = None
-        try:
-            after = int(qs.get("after", [""])[0]) if qs.get("after") else None
-        except ValueError:
-            after = None
+        raw_after = qs.get("after", [""])[0]
+        if raw_after:
+            try:
+                after = int(raw_after)
+            except ValueError:
+                # 不静默当成"无游标"：那会让客户端以为在增量补拉，
+                # 实际收到全量回放，重复弹泡且无从察觉
+                self._send_json(400, {"ok": False,
+                                      "error": f"after 必须是整数，收到 {raw_after!r}"})
+                return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -193,8 +217,9 @@ class BusHandler(BaseHTTPRequestHandler):
                     self.close_connection = True
                     break
                 self._write_event(mid, notif)
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            # 订阅者断开是常态（客户端重连/退出），DEBUG 留痕即可
+            log.debug("SSE 连接结束：%s", e)
         finally:
             self.bus.unsubscribe(sub)
 
@@ -247,7 +272,9 @@ class BusServer:
                 try:
                     s.put_nowait((SENTINEL_STOP, None))
                 except queue.Full:
-                    pass
+                    # 队列已满的订阅者收不到哨兵，但 server_close 会切断
+                    # 它的连接，客户端照样会走重连；记一行便于对照
+                    log.debug("停机哨兵投递失败（订阅者队列已满）")
         self._httpd.shutdown()
         self._httpd.server_close()
         self._thread.join(timeout)
@@ -267,8 +294,8 @@ class BusServer:
             self._counter += 1
             mid = self._counter
             self._history.append((mid, notif))
-            if len(self._history) > 200:
-                del self._history[:-200]
+            if len(self._history) > HISTORY_LIMIT:
+                del self._history[:-HISTORY_LIMIT]
             subs = list(self._subscribers)
         dead = []
         for s in subs:
@@ -277,6 +304,8 @@ class BusServer:
             except queue.Full:
                 dead.append(s)
         if dead:
+            log.warning("踢出 %d 个慢订阅者（队列已满，改由其重连补拉）",
+                        len(dead))
             with self._lock:
                 for s in dead:
                     self._subscribers.discard(s)
@@ -287,11 +316,11 @@ class BusServer:
                     while True:
                         s.get_nowait()
                 except queue.Empty:
-                    pass
+                    pass          # 清空到底即达成目的，非异常路径
                 try:
                     s.put_nowait((SENTINEL_KICK, None))
                 except queue.Full:
-                    pass
+                    log.debug("踢出哨兵投递失败（队列刚被填满）")
         return mid
 
     def history(self, n: int = 20) -> list:
@@ -336,114 +365,131 @@ class BusServer:
 # 客户端（供 CLI / adapter / 桌宠订阅使用）
 # ======================================================================
 
-def _url(port: int, host: str = DEFAULT_HOST, path: str = "/") -> str:
-    return f"http://{host}:{port}{path}"
-
-
-# 端口协商：桌宠内嵌总线被占端口时回退随机端口并写 runtime/port；
+# 端口协商：桌宠内嵌总线被占端口时回退随机端口并写运行时 port 文件；
 # 发送方连接失败后读它重试一次，适配器链不再被回退打断。
-RUNTIME_PORT_FILE = Path(__file__).resolve().parent.parent / "runtime" / "port"
-
-# 投递鉴权：runtime/token 里存一串运行时随机生成的密钥（首次启动生成，
+# 投递鉴权：token 文件里存一串运行时随机生成的密钥（首次启动生成，
 # 绝不进仓库/源码）。总线要求 POST /notify 携带 X-Pika-Token 头与之
 # 相符；己方发送方（CLI/适配器/钩子）读同一文件自动附带，对用户无感。
 # 它挡的是误投和端口撞车，不是同用户恶意进程（那读得到文件）。
-TOKEN_FILE = Path(__file__).resolve().parent.parent / "runtime" / "token"
+# 两个文件都在运行时目录（见 pika.paths），不再写源码目录旁。
+
+
+class TokenError(RuntimeError):
+    """token 不可用（读不出且写不进去）。"""
 
 
 def _load_or_create_token() -> str:
-    """读 token 文件；没有或过短则生成新的写回（幂等）。"""
-    try:
-        t = TOKEN_FILE.read_text(encoding="utf-8").strip()
-        if len(t) >= 32:
+    """读 token 文件；没有或过短则生成新的写回。
+
+    写盘失败直接抛 TokenError，不退回"仅本进程内存有效"——那样总线拿着
+    内存 token、发送方读不到文件，表现是所有 POST 都 403，比启动就报错
+    难查得多。
+    """
+    path = paths.token_file()
+    if path.is_file():
+        t = path.read_text(encoding="utf-8").strip()
+        if len(t) >= MIN_TOKEN_LEN:
             return t
-    except Exception:
-        pass
-    import secrets
     t = secrets.token_hex(32)
     try:
-        TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(t, encoding="utf-8")
-    except Exception:
-        pass  # 写盘失败（只读目录等）：本进程内仍可用
+        paths.write_text_atomic(paths.token_file(create_dir=True), t)
+    except (OSError, paths.RuntimeDirError) as e:
+        raise TokenError(
+            f"无法写入 token 文件 {path}：{e}；"
+            f"没有它发送方与总线无法互认（POST 会全部 403）") from e
     return t
 
 
 def _client_token():
-    """发送方读 token；读不到返回 None（不附带，由服务端裁决）。"""
-    try:
-        return TOKEN_FILE.read_text(encoding="utf-8").strip() or None
-    except Exception:
+    """发送方读 token。读不到返回 None：此时不附带头，由服务端裁决并
+    给出 403 + 明确原因，而不是在客户端假装成功。"""
+    path = paths.token_file()
+    if not path.is_file():
         return None
+    return path.read_text(encoding="utf-8").strip() or None
 
 
 def _fallback_port():
+    """读端口协商文件。文件不存在返回 None（正常情况：没发生过回退）；
+    内容不是合法端口则抛——那说明有人写坏了它，静默忽略会让"连不上"
+    变成无从下手的谜题。"""
+    path = paths.port_file()
+    if not path.is_file():
+        return None
+    raw = path.read_text(encoding="utf-8").strip()
     try:
-        p = int(RUNTIME_PORT_FILE.read_text(encoding="utf-8").strip())
-        if 0 < p < 65536:
-            return p
-    except Exception:
-        pass
-    return None
+        p = int(raw)
+    except ValueError as e:
+        raise PortFileError(
+            f"端口文件 {path} 内容不是数字：{raw!r}") from e
+    if not 0 < p < 65536:
+        raise PortFileError(f"端口文件 {path} 里的端口越界：{p}")
+    return p
+
+
+class PortFileError(RuntimeError):
+    """端口协商文件内容非法。"""
+
+
+def _with_port_negotiation(port: int, host: str, negotiate: bool, attempt):
+    """执行 attempt(port)；连接失败时读端口协商文件换端口重试一次。
+
+    只对 OSError（连不上/超时/连接被重置）做重试。HTTPError 是"服务在
+    但拒绝"，属协议层问题，换端口无意义；PortFileError 说明协商文件被
+    写坏，直接向上抛而不是当作"没有回退端口"——静默忽略会让"消息发不
+    出去"完全失去线索。
+    """
+    try:
+        return attempt(port)
+    except urllib.error.HTTPError:
+        raise
+    except OSError as first:
+        if not negotiate:
+            raise
+        fb = _fallback_port()
+        if fb is None or fb == port:
+            raise
+        log.debug("端口 %s 连接失败（%s），改用协商端口 %s 重试",
+                  port, first, fb)
+        return attempt(fb)
 
 
 def send_notification(notif: Notification, port: int = DEFAULT_PORT,
                       host: str = DEFAULT_HOST, timeout: float = 5.0) -> dict:
     """POST 一条消息到总线，返回总线响应 JSON。
 
-    自动附带 X-Pika-Token（读 runtime/token，与服务端同源）；
-    目标端口连不上时读 runtime/port（桌宠端口回退时写入的实际端口）
-    重试一次；服务明确拒绝（HTTP 4xx/5xx）不换端口重试。"""
+    自动附带 X-Pika-Token（读运行时 token 文件，与服务端同源）；目标端口
+    连不上时读端口协商文件（桌宠端口回退时写入的实际端口）重试一次；
+    服务明确拒绝（HTTP 4xx/5xx）不换端口重试。"""
     headers = {"Content-Type": "application/json; charset=utf-8"}
     tok = _client_token()
     if tok:
         headers["X-Pika-Token"] = tok
-    try:
-        return _http_json(port, host, "POST", "/notify",
-                          body=notif.to_json().encode("utf-8"),
-                          headers=headers, timeout=timeout)
-    except urllib.error.HTTPError:
-        raise  # 服务在但拒绝：协议层问题，换端口无意义
-    except Exception:
-        fb = _fallback_port()
-        if fb is not None and fb != port:
-            return _http_json(fb, host, "POST", "/notify",
-                              body=notif.to_json().encode("utf-8"),
-                              headers=headers, timeout=timeout)
-        raise
+    else:
+        log.warning("读不到 token 文件 %s，本次投递不附带鉴权头，"
+                    "总线会以 403 拒绝", paths.token_file())
+    body = notif.to_json().encode("utf-8")
+    return _with_port_negotiation(
+        port, host, True,
+        lambda p: _http_json(p, host, "POST", "/notify", body=body,
+                             headers=headers, timeout=timeout))
 
 
 def fetch_health(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST,
                  timeout: float = 3.0, negotiate: bool = True) -> dict:
-    """查询总线健康。negotiate=False 时不做 runtime/port 回退——
-    用于"探测这个端口是不是 pika 总线"的场景（协商会把探测带偏）。"""
-    try:
-        return _http_json(port, host, "GET", "/health", timeout=timeout)
-    except urllib.error.HTTPError:
-        raise
-    except Exception:
-        if not negotiate:
-            raise
-        fb = _fallback_port()
-        if fb is not None and fb != port:
-            return _http_json(fb, host, "GET", "/health", timeout=timeout)
-        raise
+    """查询总线健康。negotiate=False 时不做端口回退——用于"探测这个端口
+    是不是 pika 总线"的场景（协商会把探测带偏）。"""
+    return _with_port_negotiation(
+        port, host, negotiate,
+        lambda p: _http_json(p, host, "GET", "/health", timeout=timeout))
 
 
 def fetch_history(n: int = 20, port: int = DEFAULT_PORT,
                   host: str = DEFAULT_HOST, timeout: float = 3.0) -> list:
-    try:
-        data = _http_json(port, host, "GET", f"/history?n={n}",
-                          timeout=timeout)
-    except urllib.error.HTTPError:
-        raise
-    except Exception:
-        fb = _fallback_port()
-        if fb is not None and fb != port:
-            data = _http_json(fb, host, "GET", f"/history?n={n}",
-                              timeout=timeout)
-        else:
-            raise
+    data = _with_port_negotiation(
+        port, host, True,
+        lambda p: _http_json(p, host, "GET", f"/history?n={n}",
+                             timeout=timeout))
     return data.get("items", [])
 
 
@@ -455,7 +501,6 @@ def _http_json(port: int, host: str, method: str, path: str,
     用 http.client 显式连 host:port（不构造 URL、不跟随重定向），
     与"只连本机回环总线"的语义一致；4xx/5xx 转成 HTTPError，保持与
     原 urllib 版本相同的异常语义。"""
-    import http.client
     conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         conn.request(method, path, body=body, headers=headers or {})
@@ -481,12 +526,11 @@ class SSEClient:
                  read_timeout: float = None):
         self.port = port
         self.host = host
-        self.url = _url(port, host, "/events")
         self.on_event = on_event
         self.on_error = on_error or (lambda e: None)
         self.retry_sec = retry_sec
         # 读超时：服务端心跳间隔 15 秒；超过该值无任何数据（含心跳）视为
-        # 连接已死（如总线进程被 kill），及时重连而非阻塞到 urlopen 的 60 秒
+        # 连接已死（如总线进程被 kill），socket 超时后走重连
         self.read_timeout = read_timeout or (SSE_HEARTBEAT + 5)
         self._last_mid = None          # 已处理的最大消息 id，断线重连用
         self._stop = threading.Event()
@@ -525,20 +569,30 @@ class SSEClient:
                         if self._last_mid is not None:
                             self._last_mid = None
                     elif identity != known_identity:
+                        log.info("总线身份从 %s 变为 %s（重启），清空增量游标",
+                                 known_identity, identity)
                         self._last_mid = None
                     known_identity = identity
-            except Exception:
-                pass  # 总线暂不可达，重连循环会继续等
+            except (OSError, urllib.error.HTTPError, ValueError) as e:
+                # 总线暂不可达或响应异常：重连循环会继续等，DEBUG 留痕
+                log.debug("总线身份探测失败：%s", e)
             try:
-                url = self.url
+                path = "/events"
                 if self._last_mid is not None:
-                    sep = "&" if "?" in url else "?"
-                    url = f"{url}{sep}after={self._last_mid}"
-                with urllib.request.urlopen(url, timeout=60) as resp:
-                    # 服务端 15 秒发一次心跳；超过 read_timeout 无任何数据
-                    # （心跳也没有），说明连接已死（如总线被 kill），
-                    # 及时断开走重连，而不是阻塞在 read1 直到 60 秒超时
-                    resp.fp.raw._sock.settimeout(self.read_timeout)
+                    path = f"{path}?after={self._last_mid}"
+                # 与 _http_json 同源：用 http.client 显式连 host:port，
+                # 不构造 URL、不跟随重定向，与"只连本机回环总线"的语义
+                # 一致。读超时直接设在 socket 上，不必再去摸 urlopen 返回
+                # 对象的私有内部（resp.fp.raw._sock）。
+                conn = http.client.HTTPConnection(
+                    self.host, self.port, timeout=self.read_timeout)
+                try:
+                    conn.request("GET", path,
+                                 headers={"Accept": "text/event-stream"})
+                    resp = conn.getresponse()
+                    if resp.status != 200:
+                        raise urllib.error.HTTPError(
+                            path, resp.status, resp.reason or "", None, None)
                     buf = b""
                     data_lines = []
                     cur_id = None
@@ -575,34 +629,40 @@ class SSEClient:
                                     known_identity = identity
                                 continue
                             if line.startswith("id:"):
+                                raw_id = line[3:].strip()
                                 try:
-                                    cur_id = int(line[3:].strip())
+                                    cur_id = int(raw_id)
                                 except ValueError:
+                                    # 服务端只会写整数 id；出现别的说明流
+                                    # 被污染了，值得知道而不是悄悄丢游标
+                                    log.warning("SSE id 行不是整数：%r", raw_id)
                                     cur_id = None
                             elif line.startswith("data:"):
                                 data_lines.append(line[5:].strip())
                         if stale_cursor:
                             break
+                finally:
+                    conn.close()
             except Exception as e:
-                try:
+                log.debug("SSE 连接中断，%s 秒后重连：%s", self.retry_sec, e)
+                with swallow(log, "SSE on_error 回调"):
                     self.on_error(e)
-                except Exception:
-                    pass
             if not self._stop.is_set():
                 self._stop.wait(self.retry_sec)
 
     def _emit(self, data: str, mid):
         try:
             notif = Notification.from_json(data)
-        except ProtocolError:
+        except ProtocolError as e:
+            # 收到不符合协议的事件：丢弃这一条但要留痕（服务端与客户端
+            # 版本不一致时，这是唯一的线索）
+            log.warning("丢弃不符合协议的 SSE 事件：%s", e)
             return
         if self.on_event:
-            try:
-                self.on_event(notif)
-            except Exception:
-                # 回调失败：主动断开连接，让外层走重连增量补拉。
-                # 游标不推进，重连后 after=<旧mid> 会重新拿到这条消息。
-                raise
+            # 回调失败不在这里吞：让异常冒到 _run 的 except，连接断开后
+            # 走重连增量补拉。游标不推进，重连后 after=<旧mid> 会重新
+            # 拿到这条消息。
+            self.on_event(notif)
         if mid is not None:
             self._last_mid = max(self._last_mid or 0, mid)
 
@@ -611,10 +671,9 @@ class SSEClient:
 # standalone 运行
 # ======================================================================
 
-def _write_port_file(path: str, port: int):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(str(port))
+def _write_port_file(path, port: int):
+    """把实际端口写到指定文件（原子替换，避免读到写一半的内容）。"""
+    paths.write_text_atomic(Path(path), str(port))
 
 
 def main(argv=None) -> int:
@@ -626,6 +685,10 @@ def main(argv=None) -> int:
                         help="启动后把实际端口写入该文件（供测试/脚本读取）")
     args = parser.parse_args(argv)
 
+    configure_logging(file_path=paths.log_file(create_dir=True))
+    moved = paths.migrate_legacy()
+    if moved:
+        log.info("已从旧 runtime/ 目录迁移：%s", "、".join(moved))
     try:
         bus = BusServer(host=args.host, port=args.port).start()
     except OSError as e:
@@ -633,10 +696,14 @@ def main(argv=None) -> int:
         print(f"端口 {args.port} 可能被占用：请换 --port 或关掉占用方",
               file=sys.stderr)
         return 1
+    except (TokenError, paths.RuntimeDirError) as e:
+        print(f"总线启动失败：{e}", file=sys.stderr)
+        return 1
     if args.port_file:
         _write_port_file(args.port_file, bus.port)
     print(f"pika-bus 已启动: http://{bus.host}:{bus.port} (pid={os.getpid()})",
           flush=True)
+    log.info("总线启动 host=%s port=%s pid=%s", bus.host, bus.port, os.getpid())
     try:
         while True:
             time.sleep(3600)

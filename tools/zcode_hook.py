@@ -26,10 +26,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pika import paths                          # noqa: E402
 from pika.bus import send_notification          # noqa: E402
+from pika.logs import get_logger, swallow       # noqa: E402
 from pika.protocol import Notification          # noqa: E402
 
-STDIN_LOG = ROOT / "runtime" / "hook_stdin.log"
+log = get_logger("hook.zcode")
 ZCODE_DB = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 
 SNIPPET_LEN = 120
@@ -87,7 +89,8 @@ def _scan_transcript(path: str, role: str, window: int,
                 data = f.read(window).decode("utf-8", "replace")
             else:
                 data = f.read().decode("utf-8", "replace")
-    except Exception:
+    except OSError as e:
+        log.warning("转录文件 %s 读取失败（标题/摘要改用兜底）：%s", path, e)
         return ""
     lines = data.splitlines()
     if from_end:
@@ -98,7 +101,9 @@ def _scan_transcript(path: str, role: str, window: int,
             continue
         try:
             obj = json.loads(line)
-        except Exception:
+        except json.JSONDecodeError:
+            # 从尾部截断读取时，第一行往往是半条 JSON——这是预期情况，
+            # 跳过即可，不值得记日志
             continue
         if obj.get("type") != role:
             continue
@@ -139,7 +144,8 @@ def extract_snippet(payload: dict) -> str:
 def session_title_from_db(session_id: str, db_path=None) -> str:
     """按会话 ID 查客户端会话库里的标题（与 ZCode 界面显示一致）。
 
-    只读连接 + 1 秒超时，任何异常都返回空字符串走兜底链。"""
+    只读连接 + 1 秒超时。查不到就返回空字符串走后续兜底链（这是正常
+    路径，不是错误）；数据库真的报错则记一条日志再兜底。"""
     if not session_id:
         return ""
     db = Path(db_path) if db_path else ZCODE_DB
@@ -153,10 +159,11 @@ def session_title_from_db(session_id: str, db_path=None) -> str:
                               (session_id,)).fetchone()
         finally:
             con.close()
-        if row and isinstance(row[0], str) and row[0].strip():
-            return row[0].strip()
-    except Exception:
-        pass
+    except sqlite3.Error as e:
+        log.warning("查询会话库标题失败（改用兜底链）：%s", e)
+        return ""
+    if row and isinstance(row[0], str) and row[0].strip():
+        return row[0].strip()
     return ""
 
 
@@ -182,14 +189,18 @@ def resolve_title(payload: dict) -> str:
 
 
 def append_stdin_log(event: str, raw: str):
+    """把原始 stdin 追加进钩子日志，便于事后核对字段。
+
+    钩子的铁律是绝不拖累宿主会话，所以写日志失败只记一条 WARNING（会
+    落到同一套 pikachu 日志里）而不抛。"""
     try:
-        STDIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+        path = paths.hook_log_file(create_dir=True)
         entry = {"ts": round(time.time(), 3), "event": event,
                  "raw": raw[:4000]}
-        with open(STDIN_LOG, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except (OSError, paths.RuntimeDirError) as e:
+        log.warning("钩子 stdin 日志写入失败：%s", e)
 
 
 def main(argv=None) -> int:
@@ -199,28 +210,29 @@ def main(argv=None) -> int:
 
     try:
         raw = sys.stdin.read() if not sys.stdin.isatty() else ""
-    except Exception:
+    except (OSError, ValueError) as e:
+        log.warning("读取 stdin 失败，按空负载处理：%s", e)
         raw = ""
     payload = {}
     stripped = (raw or "").strip()
     if stripped.startswith("{"):
         try:
             payload = json.loads(stripped)
-        except Exception:
-            payload = {}
+        except json.JSONDecodeError as e:
+            log.warning("stdin 不是合法 JSON，按空负载处理：%s", e)
     append_stdin_log(args.event, stripped)
 
-    sid = extract_session_id(payload)
     snippet = collapse(extract_snippet(payload))
     title = collapse(resolve_title(payload), TITLE_LEN)
     title = f"会话完成 · {title}" if title else "会话完成"
     body = snippet or "（未读取到进展内容）"
-    try:
+    # 钩子的铁律：绝不阻塞或拖累宿主会话，所以发送失败也返回 0。
+    # 但失败要留痕——"钩子明明配了却没弹泡"最常见的原因就是总线没起，
+    # 静默通过会让人完全查不到。
+    with swallow(log, "会话完成通知投递"):
         send_notification(
             Notification(title=title, body=body, level="success",
                          source="zcode", ttl=12.0))
-    except Exception:
-        pass  # 总线不在/网络失败：钩子静默通过
     return 0  # 无论成败都让钩子通过
 
 

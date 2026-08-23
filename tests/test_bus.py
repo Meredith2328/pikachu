@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import time
 import unittest
 
@@ -7,7 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pika.bus import BusServer, send_notification, fetch_health, fetch_history, SSEClient
 from pika.protocol import Notification, ProtocolError
-from tests.helpers import free_port
+from tests.helpers import (bus_post_json, bus_request, bus_stream, free_port,
+                           isolated_home)
 
 
 class BusTestCase(unittest.TestCase):
@@ -36,25 +38,13 @@ class TestBusHttp(BusTestCase):
         self.assertEqual(items[0]["source"], "t")
 
     def test_invalid_payload_400(self):
-        import urllib.request
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/notify",
-            data=b'{"title": 123}',
-            headers={"Content-Type": "application/json",
-                     "X-Pika-Token": self.bus.token},
-            method="POST")
-        import urllib.error
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(req, timeout=3)
-        self.assertEqual(ctx.exception.code, 400)
+        code, _ = bus_post_json(self.port, b'{"title": 123}',
+                                token=self.bus.token)
+        self.assertEqual(code, 400)
 
     def test_unknown_path_404(self):
-        import urllib.request
-        import urllib.error
-        with self.assertRaises(urllib.error.HTTPError) as ctx:
-            urllib.request.urlopen(
-                f"http://127.0.0.1:{self.port}/nope", timeout=3)
-        self.assertEqual(ctx.exception.code, 404)
+        code, _ = bus_request(self.port, "GET", "/nope")
+        self.assertEqual(code, 404)
 
     def test_history_limit(self):
         for i in range(5):
@@ -114,16 +104,9 @@ class TestTokenAuth(BusTestCase):
     """投递鉴权：POST /notify 必须携带与服务端一致的 X-Pika-Token。"""
 
     def _post(self, headers_extra, payload=b'{"title":"t"}'):
-        import urllib.error
-        from pika import bus as bus_mod
-        try:
-            body = bus_mod._http_json(
-                self.port, "127.0.0.1", "POST", "/notify", body=payload,
-                headers={"Content-Type": "application/json", **headers_extra},
-                timeout=3)
-            return 200, body
-        except urllib.error.HTTPError as e:
-            return e.code, {}
+        token = headers_extra.get("X-Pika-Token")
+        code, text = bus_post_json(self.port, payload, token=token)
+        return code, (json.loads(text) if code == 200 else {})
 
     def test_missing_token_403(self):
         code, _ = self._post({})
@@ -150,51 +133,65 @@ class TestTokenAuth(BusTestCase):
         self.assertEqual(items[-1]["title"], "auto-token")
 
 
-class TestPortNegotiation(BusTestCase):
-    """端口协商：目标端口连不上时读 runtime/port 回退端口重试一次。"""
+class TestPortNegotiation(unittest.TestCase):
+    """端口协商：目标端口连不上时读运行时 port 文件回退端口重试一次。"""
 
     def setUp(self):
-        super().setUp()
-        import tempfile
-        from pika import bus as bus_mod
-        self._orig_file = bus_mod.RUNTIME_PORT_FILE
-        fd, tmp = tempfile.mkstemp(suffix=".txt", prefix="port_")
-        import os as _os
-        _os.close(fd)
-        _os.remove(tmp)
-        bus_mod.RUNTIME_PORT_FILE = type(self._orig_file)(tmp)
-        self.bus_mod = bus_mod
+        self._home = isolated_home()
+        self.home = self._home.__enter__()
+        self.bus = BusServer(port=0).start()
+        self.port = self.bus.port
 
     def tearDown(self):
-        self.bus_mod.RUNTIME_PORT_FILE = self._orig_file
-        super().tearDown()
+        self.bus.stop()
+        self._home.__exit__(None, None, None)
 
-    def test_send_falls_back_to_runtime_port(self):
-        """默认端口连不上 + runtime/port 指向真实总线 → 消息仍能送达。"""
-        self.bus_mod.RUNTIME_PORT_FILE.write_text(str(self.port),
-                                                  encoding="utf-8")
+    def _write_port_file(self, value):
+        from pika import paths
+        paths.write_text_atomic(paths.port_file(create_dir=True), str(value))
+
+    def test_send_falls_back_to_negotiated_port(self):
+        """默认端口连不上 + port 文件指向真实总线 → 消息仍能送达。"""
+        self._write_port_file(self.port)
         dead = self.free_dead_port()
         send_notification(Notification(title="negotiate"), port=dead)
         items = fetch_history(port=self.port)
         self.assertEqual(items[-1]["title"], "negotiate")
 
     def test_fetch_health_falls_back(self):
-        self.bus_mod.RUNTIME_PORT_FILE.write_text(str(self.port),
-                                                  encoding="utf-8")
+        self._write_port_file(self.port)
         dead = self.free_dead_port()
         h = fetch_health(port=dead)
         self.assertEqual(h["port"], self.port)
 
     def test_no_fallback_file_raises(self):
         dead = self.free_dead_port()
-        with self.assertRaises(Exception):
+        with self.assertRaises(OSError):
             fetch_health(port=dead)
 
-    def test_garbage_port_file_ignored(self):
-        self.bus_mod.RUNTIME_PORT_FILE.write_text("不是端口", encoding="utf-8")
+    def test_garbage_port_file_raises_not_ignored(self):
+        """端口文件被写坏要报出来：静默忽略会让"连不上"无从下手。"""
+        from pika import paths
+        from pika.bus import PortFileError
+        paths.write_text_atomic(paths.port_file(create_dir=True), "不是端口")
         dead = self.free_dead_port()
-        with self.assertRaises(Exception):
+        with self.assertRaises(PortFileError):
             fetch_health(port=dead)
+
+    def test_out_of_range_port_file_raises(self):
+        from pika import paths
+        from pika.bus import PortFileError
+        paths.write_text_atomic(paths.port_file(create_dir=True), "99999")
+        dead = self.free_dead_port()
+        with self.assertRaises(PortFileError):
+            fetch_health(port=dead)
+
+    def test_negotiate_false_does_not_read_port_file(self):
+        """探测"这个端口是不是 pika 总线"时不许被协商带偏。"""
+        self._write_port_file(self.port)
+        dead = self.free_dead_port()
+        with self.assertRaises(OSError):
+            fetch_health(port=dead, negotiate=False)
 
     @staticmethod
     def free_dead_port():
@@ -214,14 +211,11 @@ class TestBusSseIdentity(BusTestCase):
         客户端靠它发现"连上了重启后的总线"（快速重启时 /health 探测
         有竞态，可能带着旧游标连上来，把该补送的消息过滤掉）。
         """
-        import urllib.request
-        with urllib.request.urlopen(
-                f"http://127.0.0.1:{self.port}/events", timeout=5) as resp:
+        with bus_stream(self.port) as resp:
             head = resp.read1(256).decode("utf-8", errors="replace")
-        body = head.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in head else head
-        self.assertTrue(body.startswith(": gen="),
+        self.assertTrue(head.startswith(": gen="),
                         f"SSE 流应以身份注释开头，实际: {head!r}")
-        self.assertIn(f"pid={os.getpid()}", body)
+        self.assertIn(f"pid={os.getpid()}", head)
 
 
 class TestBusSseReplay(BusTestCase):
@@ -390,17 +384,9 @@ class TestBusContentType(unittest.TestCase):
     def test_rejects_non_json_content_type(self):
         b = BusServer(port=0).start()
         try:
-            import urllib.request
-            import urllib.error
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{b.port}/notify",
-            data=b'{"title":"x"}',
-            headers={"Content-Type": "text/plain",
-                     "X-Pika-Token": b.token},
-            method="POST")
-            with self.assertRaises(urllib.error.HTTPError) as ctx:
-                urllib.request.urlopen(req, timeout=3)
-            self.assertEqual(ctx.exception.code, 415)
+            code, _ = bus_post_json(b.port, b'{"title":"x"}', token=b.token,
+                                    ctype="text/plain")
+            self.assertEqual(code, 415)
         finally:
             b.stop()
 
@@ -422,6 +408,33 @@ class TestBusUnsubscribe(unittest.TestCase):
         self.assertEqual(got[0], mid)
         self.assertEqual(got[1].title, "x")
         b.stop()
+
+
+class TestBadQueryParamsRejected(BusTestCase):
+    """非法查询参数返回 400，而不是静默套用默认值。
+
+    静默兜底的害处很具体：after 写坏了当成"无游标"，客户端以为在增量
+    补拉、实际收到全量回放，会重复弹一屏气泡且完全无从察觉。"""
+
+    def _get_status(self, path):
+        return bus_request(self.port, "GET", path)[0]
+
+    def test_bad_history_n_400(self):
+        # URL 里不能直接放非 ASCII，转义后发（服务端解出来仍是非数字）
+        self.assertEqual(self._get_status("/history?n=%E5%BE%88%E5%A4%9A"), 400)
+
+    def test_bad_history_n_ascii_400(self):
+        self.assertEqual(self._get_status("/history?n=lots"), 400)
+
+    def test_valid_history_n_ok(self):
+        self.assertEqual(self._get_status("/history?n=5"), 200)
+
+    def test_history_n_clamped_not_rejected(self):
+        """超范围的 n 仍钳制处理：它是"合法整数、只是过大"。"""
+        self.assertEqual(self._get_status("/history?n=99999"), 200)
+
+    def test_bad_after_400(self):
+        self.assertEqual(self._get_status("/events?after=abc"), 400)
 
 
 class TestProtocolValidationOnBus(BusTestCase):

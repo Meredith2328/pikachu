@@ -17,10 +17,12 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
+from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+
+from tests.helpers import bus_post_json, bus_request  # noqa: E402
 
 PY = sys.executable
 PASS = 0
@@ -59,28 +61,30 @@ def wait_until(pred, timeout=10, interval=0.1):
 
 def http_post_headers():
     headers = {"Content-Type": "application/json"}
-    try:
-        from pika.bus import _client_token
-        tok = _client_token()
-        if tok:
-            headers["X-Pika-Token"] = tok
-    except Exception:
-        pass
+    from pika.bus import _client_token
+    tok = _client_token()
+    if tok:
+        headers["X-Pika-Token"] = tok
+    else:
+        print("  ⚠ 读不到 token 文件，投递会被总线以 403 拒绝")
     return headers
 
 
 def http_post(port, payload):
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/notify",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers=http_post_headers(), method="POST")
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read().decode("utf-8"))
+    """往总线 POST 一条通知。用 http.client 显式连回环，与被测代码同源。"""
+    code, text = bus_post_json(
+        port, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        token=http_post_headers().get("X-Pika-Token"))
+    if code >= 400:
+        raise RuntimeError(f"POST /notify 返回 {code}：{text}")
+    return json.loads(text)
 
 
 def http_get_json(port, path):
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
-        return json.loads(r.read().decode("utf-8"))
+    code, text = bus_request(port, "GET", path)
+    if code >= 400:
+        raise RuntimeError(f"GET {path} 返回 {code}：{text}")
+    return json.loads(text)
 
 
 def spawn(cmd, **kw):
@@ -195,24 +199,24 @@ def test_reminder_full_chain():
         client.start()
         try:
             # 假数据源：idle=0（一直在工作）
-            fake_path = os.path.join(tmpdir, "activity.json")
-            with open(fake_path, "w", encoding="utf-8") as f:
-                json.dump({"idle_minutes": 0}, f)
+            fake_path = Path(tmpdir) / "activity.json"
+            fake_path.write_text(json.dumps({"idle_minutes": 0}),
+                                 encoding="utf-8")
             # 短间隔配置：每 3 秒一次（interval_min/max 单位是分钟）
-            config_path = os.path.join(tmpdir, "reminder.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "interval_enabled": True,
-                    "interval_min": 0.05,
-                    "interval_max": 0.05,
-                    "long_session_enabled": False,
-                    "categories": ["eye"],
-                    "title": "该休息一下了",
-                }, f)
+            config_path = Path(tmpdir) / "reminder.json"
+            config_path.write_text(json.dumps({
+                "interval_enabled": True,
+                "interval_min": 0.05,
+                "interval_max": 0.05,
+                "long_session_enabled": False,
+                "categories": ["eye"],
+                "title": "该休息一下了",
+            }), encoding="utf-8")
 
             # 常驻进程（真实时钟），等它真触发
-            proc = spawn(["-m", "pika.reminder_runner", "--config", config_path,
-                          "--fake", fake_path, "--port", str(port),
+            proc = spawn(["-m", "pika.reminder_runner",
+                          "--config", str(config_path),
+                          "--fake", str(fake_path), "--port", str(port),
                           "--interval", "0.2"])
             try:
                 ok = wait_until(

@@ -28,14 +28,19 @@ except ImportError:
     tk = None  # 无 GUI 环境（CI）下 import 本模块不报错
 
 from . import bus
+from . import paths
 from . import pet_state
 from .bubble import Bubble
+from .logs import configure as configure_logging
+from .logs import get_logger, swallow
 from .menu import PikaMenu
 from .pet_core import PetController
 from .pixtokens import ASSET, BG, TURN_DIR, TURN_TICK_MS, YELLOW
 from .protocol import Notification
 from .turn import TurnDirector, frame_index, get_cursor_pos, turn_frame_paths
 from .win.idle import get_idle_seconds, WinIdleSource  # noqa: F401
+
+log = get_logger("pet")
 
 DEFAULT_PORT = bus.DEFAULT_PORT
 
@@ -205,20 +210,22 @@ class PikaPet:
             self.sse.start()
         else:
             # 内嵌总线：端口被非 pika 服务占用时由内核原子分配随机端口，
-            # 并把实际端口写入 runtime/port（外部软件据此连接）
+            # 并把实际端口写入运行时 port 文件（外部软件据此连接）
             fell_back = False
             try:
                 self.server = bus.BusServer(port=port).start()
             except OSError:
                 self.server = bus.BusServer(port=0).start()
                 fell_back = True
-            runtime_dir = Path(__file__).resolve().parent.parent / "runtime"
-            runtime_dir.mkdir(exist_ok=True)
-            (runtime_dir / "port").write_text(str(self.server.port),
-                                              encoding="utf-8")
+            # 端口文件写不了要报出来：外部软件（适配器/钩子）靠它找回退
+            # 端口，静默失败会表现为"通知莫名发不出去"
+            paths.write_text_atomic(paths.port_file(create_dir=True),
+                                    str(self.server.port))
             if fell_back:
-                print(f"pika-pet 总线端口 {self.server.port} "
-                      f"(默认 {port} 被占用，已回退)", flush=True)
+                msg = (f"pika-pet 总线端口 {self.server.port} "
+                       f"(默认 {port} 被占用，已回退)")
+                print(msg, flush=True)
+                log.warning("%s", msg)
             self.sse = bus.SSEClient(
                 port=self.server.port, on_event=self._on_bus_msg,
                 on_error=lambda e: None)
@@ -682,6 +689,14 @@ def main(argv=None):
     if tk is None:
         print("本环境没有 tkinter，无法启动桌宠 GUI", file=sys.stderr)
         return 1
+    try:
+        configure_logging(file_path=paths.log_file(create_dir=True))
+    except (OSError, paths.RuntimeDirError) as e:
+        print(f"运行时目录不可用：{e}", file=sys.stderr)
+        return 1
+    moved = paths.migrate_legacy()
+    if moved:
+        log.info("已从旧 runtime/ 目录迁移：%s", "、".join(moved))
     _make_dpi_aware()
     pet = PikaPet(port=args.port, subscribe_only=args.subscribe_only,
                   with_reminder=not args.no_reminder)
