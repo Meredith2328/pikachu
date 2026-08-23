@@ -16,7 +16,6 @@
 """
 import ctypes
 import json
-import os
 import queue
 import sys
 import threading
@@ -253,7 +252,7 @@ class PikaPet:
                 on_error=lambda e: None)
             self.sse.start()
         else:
-            # 内嵌总线：端口被非 pika 服务占用时由内核原子分配随机端口，
+            # 内嵌总线：端口被非皮卡丘服务占用时由内核原子分配随机端口，
             # 并把实际端口写入运行时 port 文件（外部软件据此连接）
             fell_back = False
             try:

@@ -5,8 +5,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.reminder import ReminderConfig, ReminderScheduler, _Clock
-from pika.reminder_phrases import PHRASES, pick, pick_by_config, Phrase
+from pikapet.reminder import ReminderConfig, ReminderScheduler, _Clock
+from pikapet.reminder_phrases import PHRASES, pick, pick_by_config, Phrase
 
 
 class FakeActivity:
@@ -288,7 +288,7 @@ class TestConfigValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="pika-cfg-") as td:
             path = Path(td) / "reminder.json"
             path.write_text(json.dumps(base), encoding="utf-8")
-            from pika.reminder_runner import load_config
+            from pikapet.reminder_runner import load_config
             return load_config(str(path))
 
     def test_valid_config(self):

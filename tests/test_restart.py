@@ -5,9 +5,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.bus import BusServer, send_notification, SSEClient
-from pika.protocol import Notification
-from pika.pet_core import PetController
+from pikapet.bus import BusServer, send_notification, SSEClient
+from pikapet.protocol import Notification
+from pikapet.pet_core import PetController
 from tests.helpers import free_port
 
 
@@ -84,7 +84,7 @@ class TestGenerationReset(unittest.TestCase):
             bus2 = BusServer(port=port).start()
             try:
                 # 等新总线真正可服务（全套件高负载时盲睡固定秒数不可靠）
-                from pika import bus as _bus
+                from pikapet import bus as _bus
                 deadline = time.time() + 10
                 while time.time() < deadline:
                     try:
@@ -132,7 +132,7 @@ class TestGenerationReset(unittest.TestCase):
 
         # 起真实子进程总线
         bus1 = subprocess.Popen(
-            [_sys.executable, "-m", "pika.bus", "--port", str(free_port())],
+            [_sys.executable, "-m", "pikapet.bus", "--port", str(free_port())],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # 从 stdout 拿不到端口（被丢弃），用固定端口避免竞态
         bus1.kill()
@@ -140,14 +140,14 @@ class TestGenerationReset(unittest.TestCase):
 
         port = free_port()
         bus1 = subprocess.Popen(
-            [_sys.executable, "-m", "pika.bus", "--port", str(port)],
+            [_sys.executable, "-m", "pikapet.bus", "--port", str(port)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             # 慢 CI（冷启动解释器 + 杀毒扫描）上拉起子总线可能要几十秒
             deadline = time.time() + 40
             while time.time() < deadline:
                 try:
-                    from pika import bus as _bus
+                    from pikapet import bus as _bus
                     _bus.fetch_health(port=port, timeout=1)
                     break
                 except Exception:
@@ -169,14 +169,14 @@ class TestGenerationReset(unittest.TestCase):
                 bus1.wait(5)
                 time.sleep(1.0)
                 bus2 = subprocess.Popen(
-                    [_sys.executable, "-m", "pika.bus", "--port", str(port)],
+                    [_sys.executable, "-m", "pikapet.bus", "--port", str(port)],
                     cwd=ROOT, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL)
                 try:
                     deadline = time.time() + 40
                     while time.time() < deadline:
                         try:
-                            from pika import bus as _bus2
+                            from pikapet import bus as _bus2
                             _bus2.fetch_health(port=port, timeout=1)
                             break
                         except Exception:
@@ -215,19 +215,19 @@ class TestIdleWrap(unittest.TestCase):
     """GetTickCount 32 位回绕：空闲时间不应算错。"""
 
     def test_idle_wraparound_32bit(self):
-        from pika.win.idle import _compute_idle_seconds
+        from pikapet.win.idle import _compute_idle_seconds
         # dwTime 已回绕到小值（1000ms），tick64 是 0x100000000 + 6000
         # （即 5000ms 前输入）：期望约 5 秒，而不是巨大的错误值
         secs = _compute_idle_seconds(0x100000000 + 6000, 1000)
         self.assertAlmostEqual(secs, 5.0, delta=0.001)
 
     def test_idle_normal_no_wrap(self):
-        from pika.win.idle import _compute_idle_seconds
+        from pikapet.win.idle import _compute_idle_seconds
         secs = _compute_idle_seconds(30_000, 10_000)
         self.assertAlmostEqual(secs, 20.0, delta=0.001)
 
     def test_idle_small_no_negative(self):
-        from pika.win.idle import _compute_idle_seconds
+        from pikapet.win.idle import _compute_idle_seconds
         secs = _compute_idle_seconds(5000, 10000)  # tick 比 dwTime 小（未回绕）
         self.assertGreaterEqual(secs, 0.0)
 

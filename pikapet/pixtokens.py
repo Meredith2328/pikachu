@@ -3,7 +3,7 @@
 
 致敬 pilog（pixel / minimal 主题）：调色板取自 Chrome 离线小恐龙——
 纸白 paper · 墨色 ink · 灰 text/mute；2px 实色硬边 + 无模糊偏移硬阴影
-+ 等宽字体。气泡（pika.bubble）与右键菜单（pika.menu）共用本模块。
++ 等宽字体。气泡（pikapet.bubble）与右键菜单（pikapet.menu）共用本模块。
 """
 import re
 from pathlib import Path

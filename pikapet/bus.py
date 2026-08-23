@@ -9,7 +9,7 @@
   也可以独立跑一个 bus 进程，让多个显示端共享。
 
 用法（standalone）:
-    python -m pika.bus --port 7452 --port-file runtime/port
+    python -m pikapet.bus --port 7452 --port-file runtime/port
 """
 import argparse
 import http.client
@@ -371,7 +371,7 @@ class BusServer:
 # 绝不进仓库/源码）。总线要求 POST /notify 携带 X-Pika-Token 头与之
 # 相符；己方发送方（CLI/适配器/钩子）读同一文件自动附带，对用户无感。
 # 它挡的是误投和端口撞车，不是同用户恶意进程（那读得到文件）。
-# 两个文件都在运行时目录（见 pika.paths），不再写源码目录旁。
+# 两个文件都在运行时目录（见 pikapet.paths），不再写源码目录旁。
 
 
 class TokenError(RuntimeError):
@@ -384,7 +384,11 @@ def _load_or_create_token() -> str:
     写盘失败直接抛 TokenError，不退回"仅本进程内存有效"——那样总线拿着
     内存 token、发送方读不到文件，表现是所有 POST 都 403，比启动就报错
     难查得多。
+
+    生成前先跑一次旧目录迁移：否则新装的副本会先造一个新 token，与仍在
+    跑的旧桌宠（持旧 token）互不认识。
     """
+    paths.migrate_legacy_once()
     path = paths.token_file()
     if path.is_file():
         t = path.read_text(encoding="utf-8").strip()
@@ -403,6 +407,7 @@ def _load_or_create_token() -> str:
 def _client_token():
     """发送方读 token。读不到返回 None：此时不附带头，由服务端裁决并
     给出 403 + 明确原因，而不是在客户端假装成功。"""
+    paths.migrate_legacy_once()
     path = paths.token_file()
     if not path.is_file():
         return None
@@ -478,7 +483,7 @@ def send_notification(notif: Notification, port: int = DEFAULT_PORT,
 def fetch_health(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST,
                  timeout: float = 3.0, negotiate: bool = True) -> dict:
     """查询总线健康。negotiate=False 时不做端口回退——用于"探测这个端口
-    是不是 pika 总线"的场景（协商会把探测带偏）。"""
+    是不是皮卡丘总线"的场景（协商会把探测带偏）。"""
     return _with_port_negotiation(
         port, host, negotiate,
         lambda p: _http_json(p, host, "GET", "/health", timeout=timeout))

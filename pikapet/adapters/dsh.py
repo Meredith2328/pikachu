@@ -8,21 +8,20 @@ DSH 是一次性 headless agent（`dsh --profile headless "任务"`），没有�
 
 用法：
   包装模式（推荐，替代直接调 dsh）：
-    python -m pika.adapters.dsh run "调研X" "任务文本..." --cwd D:\\scratch --timeout 420
+    python -m pikapet.adapters.dsh run "调研X" "任务文本..." --cwd D:\\scratch --timeout 420
     # 超长任务文本（Windows 命令行 ~32K 上限）写文件后用：
-    python -m pika.adapters.dsh run "调研X" --task-file /tmp/dsh-task.md
+    python -m pikapet.adapters.dsh run "调研X" --task-file /tmp/dsh-task.md
     # stdout = dsh 的最终回答；退出码与 dsh 一致；过程中皮卡丘弹两个气泡
 
   报告模式（手动汇报某个阶段，与 zcode 适配器同构）：
-    python -m pika.adapters.dsh report "调研X" --stage done --detail "结论：..."
+    python -m pikapet.adapters.dsh report "调研X" --stage done --detail "结论：..."
 
-本适配器只依赖 pika.bus / pika.protocol，对 dsh 无任何代码依赖。
+本适配器只依赖 pikapet.bus / pikapet.protocol，对 dsh 无任何代码依赖。
 
 退出码：0 成功；2 参数错误；3 总线不可达（包装模式下仍继续跑 dsh，
 只是没气泡）；4 dsh 不存在；否则透传 dsh 退出码；124 超时。
 """
 import argparse
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -47,13 +46,12 @@ def _send(notif, port, fatal=False) -> bool:
         return False
 
 
-def _report_main(args) -> int:
+def run_report(args) -> int:
     level = args.level or stage_level(args.stage)
     n = Notification(title=stage_title(args.stage, args.name),
                      body=args.detail or "", level=level,
                      source=args.source, ttl=args.ttl)
-    ok = _send(n, args.port)
-    if not ok:
+    if not _send(n, args.port):
         return 3
     return 0
 
@@ -113,11 +111,8 @@ def run_wrapped(args) -> int:
     return proc.returncode
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="pika-adapter-dsh", description="DSH headless 子任务 → 皮卡丘通知包装器")
-    sub = parser.add_subparsers(dest="mode", required=True)
-
+def add_subcommands(sub):
+    """挂 run / report 两个模式。顶层 CLI 与独立入口共用这一处定义。"""
     p_run = sub.add_parser("run", help="包装运行 dsh，start/done/error 全程汇报")
     p_run.add_argument("name", help="任务名称（显示在气泡标题）")
     p_run.add_argument("task", nargs="?", default="",
@@ -131,6 +126,7 @@ def main(argv=None) -> int:
     p_run.add_argument("--source", default="dsh")
     p_run.add_argument("--ttl", type=float, default=20.0)
     p_run.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
+    p_run.set_defaults(func=run_wrapped)
 
     p_rp = sub.add_parser("report", help="手动汇报某个阶段（与 zcode 适配器同构）")
     p_rp.add_argument("name", help="任务名称")
@@ -141,11 +137,23 @@ def main(argv=None) -> int:
     p_rp.add_argument("--source", default="dsh")
     p_rp.add_argument("--ttl", type=float, default=15.0)
     p_rp.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
+    p_rp.set_defaults(func=run_report)
 
+
+def register(sub):
+    """注册 `pikachu dsh run|report` 子命令。"""
+    p = sub.add_parser("dsh", help="DSH 子任务包装器（run/report）")
+    add_subcommands(p.add_subparsers(dest="mode", required=True))
+    return p
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pikapet-adapter-dsh",
+        description="DSH headless 子任务 → 皮卡丘通知包装器")
+    add_subcommands(parser.add_subparsers(dest="mode", required=True))
     args = parser.parse_args(argv)
-    if args.mode == "report":
-        return _report_main(args)
-    return run_wrapped(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":

@@ -10,8 +10,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def run_cli(*args, port):
+    """跑一条 CLI 子命令。--port 挂在子命令上（不再是顶层全局参数）。"""
     env = dict(os.environ)
-    return subprocess.run([PY, "-m", "pika.cli", "--port", str(port), *args],
+    return subprocess.run([PY, "-m", "pikapet", *args, "--port", str(port)],
                           cwd=ROOT, capture_output=True, text=True, env=env,
                           timeout=30)
 
@@ -20,7 +21,7 @@ class TestCli(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import socket
-        from pika.bus import BusServer
+        from pikapet.bus import BusServer
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
         cls.port = s.getsockname()[1]
@@ -41,7 +42,7 @@ class TestCli(unittest.TestCase):
     def test_send_fail_when_bus_down(self):
         from tests.helpers import isolated_runtime_port
         with isolated_runtime_port():
-            r = subprocess.run([PY, "-m", "pika.cli", "--port", "1", "send", "x"],
+            r = subprocess.run([PY, "-m", "pikapet", "send", "x", "--port", "1"],
                                cwd=ROOT, capture_output=True, text=True,
                                timeout=30)
         self.assertEqual(r.returncode, 1)
@@ -75,7 +76,7 @@ class TestCli(unittest.TestCase):
                 "categories": ["eye"]}), encoding="utf-8")
             with isolated_runtime_port():
                 r = subprocess.run(
-                    [PY, "-m", "pika.reminder_runner", "--once", "--port", "1",
+                    [PY, "-m", "pikapet.reminder_runner", "--once", "--port", "1",
                      "--fake", str(fake), "--config", str(cfg),
                      "--interval", "0.05"],
                     cwd=ROOT, capture_output=True, text=True, timeout=30)

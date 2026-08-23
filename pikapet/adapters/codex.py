@@ -4,18 +4,18 @@
 两种用法：
 
 1. 事件模式（Codex notify / hooks 调用，收 agent-turn-complete 事件）：
-     python -m pika.adapters.codex event '<JSON>'      # JSON 作为参数
-     echo '<JSON>' | python -m pika.adapters.codex event   # 或从 stdin 读
+     python -m pikapet.adapters.codex event '<JSON>'      # JSON 作为参数
+     echo '<JSON>' | python -m pikapet.adapters.codex event   # 或从 stdin 读
    Codex 每轮回复完成时会带着事件 JSON 调用本脚本，弹气泡显示
    「这轮问了什么 + 回答开头一小段」。
 
 2. 报告模式（Codex automations 提示词里约定调用，与 zcode 适配器同构）：
-     python -m pika.adapters.codex report "每日简报" --stage start
-     python -m pika.adapters.codex report "每日简报" --stage done --detail "生成 3 个文件"
+     python -m pikapet.adapters.codex report "每日简报" --stage start
+     python -m pikapet.adapters.codex report "每日简报" --stage done --detail "生成 3 个文件"
 
 不带子命令时自动判别：首参以 `{` 开头按事件处理，否则按报告处理。
 
-本适配器只依赖 pika.bus / pika.protocol，对 codex 无任何代码依赖——
+本适配器只依赖 pikapet.bus / pikapet.protocol，对 codex 无任何代码依赖——
 是 codex 那侧（notify 配置 / hooks 配置 / 自动化提示词）来调用我们。
 
 退出码：0 成功或已忽略；2 参数/负载错误；3 总线不可达（事件模式下
@@ -74,7 +74,7 @@ def read_payload(argv_payload):
     return json.loads(raw)
 
 
-def _report_main(args) -> int:
+def run_report(args) -> int:
     level = args.level or stage_level(args.stage)
     n = Notification(title=stage_title(args.stage, args.name),
                      body=args.detail or "", level=level,
@@ -88,38 +88,7 @@ def _report_main(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    # 无子命令时的自动判别：{ 开头是事件 JSON，否则是报告
-    if argv and argv[0] not in ("event", "report"):
-        argv.insert(0, "event" if argv[0].lstrip().startswith("{") else "report")
-
-    parser = argparse.ArgumentParser(
-        prog="pika-adapter-codex", description="Codex → 皮卡丘通知适配器")
-    sub = parser.add_subparsers(dest="mode", required=True)
-
-    p_ev = sub.add_parser("event", help="处理 notify/hooks 事件 JSON")
-    p_ev.add_argument("payload", nargs="?", default="",
-                      help="事件 JSON（缺省从 stdin 读）")
-    p_ev.add_argument("--source", default="codex")
-    p_ev.add_argument("--ttl", type=float, default=15.0)
-    p_ev.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
-
-    p_rp = sub.add_parser("report", help="自动化阶段报告（与 zcode 适配器同构）")
-    p_rp.add_argument("name", help="任务名称")
-    p_rp.add_argument("--stage", choices=("start", "done", "error", "run"),
-                      default="done")
-    p_rp.add_argument("--detail", default="")
-    p_rp.add_argument("--level", choices=Notification.VALID_LEVELS, default=None)
-    p_rp.add_argument("--source", default="codex")
-    p_rp.add_argument("--ttl", type=float, default=15.0)
-    p_rp.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
-
-    args = parser.parse_args(argv)
-
-    if args.mode == "report":
-        return _report_main(args)
-
+def run_event(args) -> int:
     try:
         payload = read_payload(args.payload)
     except ValueError as e:
@@ -142,6 +111,54 @@ def main(argv=None) -> int:
         # 通知钩子绝不能阻塞 Codex：失败只记 stderr，返回 0
         print(f"总线不可达：{e}", file=sys.stderr)
     return 0
+
+
+def add_subcommands(sub):
+    """挂 event / report 两个模式。顶层 CLI 与独立入口共用这一处定义。"""
+    p_ev = sub.add_parser("event", help="处理 notify/hooks 事件 JSON")
+    p_ev.add_argument("payload", nargs="?", default="",
+                      help="事件 JSON（缺省从 stdin 读）")
+    p_ev.add_argument("--source", default="codex")
+    p_ev.add_argument("--ttl", type=float, default=15.0)
+    p_ev.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
+    p_ev.set_defaults(func=run_event)
+
+    p_rp = sub.add_parser("report", help="自动化阶段报告（与 zcode 适配器同构）")
+    p_rp.add_argument("name", help="任务名称")
+    p_rp.add_argument("--stage", choices=("start", "done", "error", "run"),
+                      default="done")
+    p_rp.add_argument("--detail", default="")
+    p_rp.add_argument("--level", choices=Notification.VALID_LEVELS, default=None)
+    p_rp.add_argument("--source", default="codex")
+    p_rp.add_argument("--ttl", type=float, default=15.0)
+    p_rp.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
+    p_rp.set_defaults(func=run_report)
+
+
+def register(sub):
+    """注册 `pikachu codex event|report` 子命令。"""
+    p = sub.add_parser("codex", help="Codex 通知适配器（event/report）")
+    add_subcommands(p.add_subparsers(dest="mode", required=True))
+    return p
+
+
+def normalize_argv(argv):
+    """无子命令时自动判别：`{` 开头是事件 JSON，否则是报告。
+
+    Codex 的 notify 配置直接把事件 JSON 作为首参传进来，没有子命令词。"""
+    argv = list(argv)
+    if argv and argv[0] not in ("event", "report"):
+        argv.insert(0, "event" if argv[0].lstrip().startswith("{") else "report")
+    return argv
+
+
+def main(argv=None) -> int:
+    argv = normalize_argv(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(
+        prog="pikapet-adapter-codex", description="Codex → 皮卡丘通知适配器")
+    add_subcommands(parser.add_subparsers(dest="mode", required=True))
+    args = parser.parse_args(argv)
+    return args.func(args)
 
 
 if __name__ == "__main__":

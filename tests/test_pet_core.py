@@ -4,8 +4,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.pet_core import PetController
-from pika.protocol import Notification
+from pikapet.pet_core import PetController
+from pikapet.protocol import Notification
 
 
 class FakeClock:

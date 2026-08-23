@@ -2,7 +2,6 @@
 import sys
 import os
 import unittest
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,7 +11,7 @@ from tests.helpers import gui_available
 @unittest.skipUnless(gui_available(), "无 GUI 环境")
 class TestEmbeddedReminder(unittest.TestCase):
     def _pet(self, with_reminder=True):
-        from pika.pet import PikaPet
+        from pikapet.pet import PikaPet
         return PikaPet(port=0, subscribe_only=True,
                        with_reminder=with_reminder)
 

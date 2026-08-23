@@ -3,10 +3,18 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+build/
+dist/
 .venv/
 venv/
 
-# 运行时
+# 运行时数据现在在 %LOCALAPPDATA%\pikachu（见 pikapet.paths）。
+# 这条留着是为了忽略老版本遗留的目录：迁移逻辑会读它，但它不该进仓库。
 runtime/
 *.pid
 *.log
+
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
+.mimosa/

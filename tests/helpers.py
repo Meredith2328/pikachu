@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika import paths  # noqa: E402  （要先插好 sys.path 才能 import）
+from pikapet import paths  # noqa: E402  （要先插好 sys.path 才能 import）
 
 
 def free_port():
@@ -43,7 +43,7 @@ def wait_http(port, timeout=10, path="/health"):
 def bus_request(port, method, path, body=None, headers=None, timeout=5):
     """对本机回环总线发一次请求，返回 (状态码, 响应体文本)。
 
-    用 http.client 显式连 127.0.0.1:port，与被测代码（pika.bus._http_json）
+    用 http.client 显式连 127.0.0.1:port，与被测代码（pikapet.bus._http_json）
     同源：不拼 URL、不跟随重定向，也不会因为 4xx 就抛异常——测试要断言
     状态码本身，用 urlopen 得靠 catch HTTPError 才能拿到，很绕。
     """
@@ -100,17 +100,30 @@ def isolated_home():
     通过 PIKACHU_HOME 环境变量生效，所以**子进程也一起隔离**——测试
     绝不会碰用户真实的 %LOCALAPPDATA%\\pikachu，也不会因为本机跑着桌宠
     而串台。退出时恢复原值。
+
+    同时禁掉"旧目录迁移"：否则隔离目录里第一次读 token 会把仓库真实的
+    runtime/token 搬进来，测试结果就取决于开发机上有没有那个文件了。
+    本进程用模块标记、子进程用 PIKACHU_NO_MIGRATE 环境变量（子进程自己
+    会跑一次迁移，patch 模块变量管不到）。要测迁移本身的用例请直接操作
+    paths.migrate_legacy。
     """
     prev = os.environ.get(paths.HOME_ENV)
+    prev_no_mig = os.environ.get(paths.NO_MIGRATE_ENV)
+    prev_migrated = paths._migrated_once
     with tempfile.TemporaryDirectory(prefix="pika-home-") as td:
         os.environ[paths.HOME_ENV] = td
+        os.environ[paths.NO_MIGRATE_ENV] = "1"
+        paths._migrated_once = True
         try:
             yield Path(td)
         finally:
-            if prev is None:
-                os.environ.pop(paths.HOME_ENV, None)
-            else:
-                os.environ[paths.HOME_ENV] = prev
+            paths._migrated_once = prev_migrated
+            for key, val in ((paths.HOME_ENV, prev),
+                             (paths.NO_MIGRATE_ENV, prev_no_mig)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
 
 
 @contextlib.contextmanager

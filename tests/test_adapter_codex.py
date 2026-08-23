@@ -7,8 +7,8 @@ import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.bus import BusServer, fetch_history
-from pika.adapters.codex import parse_event, read_payload, collapse
+from pikapet.bus import BusServer, fetch_history
+from pikapet.adapters.codex import parse_event, read_payload, collapse
 from tests.helpers import free_port
 
 PY = sys.executable
@@ -71,7 +71,7 @@ class TestCodexAdapterE2E(unittest.TestCase):
 
     def _run(self, *args, stdin=None):
         return subprocess.run(
-            [PY, "-m", "pika.adapters.codex", *args],
+            [PY, "-m", "pikapet.adapters.codex", *args],
             cwd=ROOT, capture_output=True, text=True, timeout=30,
             encoding="utf-8", input=stdin)
 

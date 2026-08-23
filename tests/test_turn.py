@@ -2,14 +2,13 @@
 """鼠标跟随转身：TurnDirector 决策数学、帧路径加载、真 Tk 渲染集成。"""
 import sys
 import os
-import time
 import unittest
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.turn import TurnDirector, frame_index, turn_frame_paths
+from pikapet.turn import TurnDirector, frame_index, turn_frame_paths
 
 
 class FakeClock:
@@ -227,17 +226,14 @@ class TestPetTurnIntegration(unittest.TestCase):
     """真 Tk：PikaPet 加载帧资产后按坐标渲染对应帧。"""
 
     def _make_pet(self):
-        import tkinter as tk
-        from pika.bus import BusServer
-        from pika.pet import PikaPet
+        from pikapet.bus import BusServer
+        from pikapet.pet import PikaPet
         bus_srv = BusServer(port=0).start()
         pet = PikaPet(port=bus_srv.port)
         return pet, bus_srv
 
     def test_load_and_render_left_right_front(self):
-        import tkinter as tk
-        from pika.turn import TurnDirector
-        from pika.pet import TURN_TICK_MS
+        from pikapet.turn import TurnDirector
 
         pet, bus_srv = self._make_pet()
         try:
@@ -271,7 +267,9 @@ class TestPetTurnIntegration(unittest.TestCase):
                 cx = 500 + pet.size // 2
                 cy = 500 + pet.size // 2
 
-                cur = lambda: pet.canvas.itemcget(pet._img_id, "image")
+                def cur():
+                    """当前画布上挂的是哪张 PhotoImage。"""
+                    return pet.canvas.itemcget(pet._img_id, "image")
 
                 def step_force(x, y):
                     """清掉上一步的 key 强制重绘：隔离任何漏网的真实
@@ -310,7 +308,7 @@ class TestPetTurnIntegration(unittest.TestCase):
 
     def test_real_assets_load_if_present(self):
         """仓库自带 assets/turn 时应能加载且两侧数量一致；没有则跳过。"""
-        from pika.pet import TURN_DIR
+        from pikapet.pet import TURN_DIR
         paths = turn_frame_paths(TURN_DIR)
         if paths is None:
             self.skipTest("assets/turn 未生成")

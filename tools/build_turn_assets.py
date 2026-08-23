@@ -129,17 +129,17 @@ def key_background(im: Image.Image) -> Image.Image:
 
 
 def union_bbox(frames: list[Image.Image]) -> tuple[int, int, int, int]:
-    l = t = 10 ** 9
-    r = b = -1
+    left = top = 10 ** 9
+    right = bottom = -1
     for im in frames:
         bbox = im.getbbox()  # alpha>0 的包围盒
         if bbox is None:
             continue
         x0, y0, x1, y1 = bbox
-        l, t = min(l, x0), min(t, y0)
-        r, b = max(r, x1), max(b, y1)
+        left, top = min(left, x0), min(top, y0)
+        right, bottom = max(right, x1), max(bottom, y1)
     pad = 6
-    return (max(0, l - pad), max(0, t - pad), r + pad, b + pad)
+    return (max(0, left - pad), max(0, top - pad), right + pad, bottom + pad)
 
 
 def estimate_body_axis(im: Image.Image) -> int:

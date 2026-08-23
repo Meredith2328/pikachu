@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""pika.logs 的单元测试：级别解析、swallow 语义、handler 幂等。"""
+"""pikapet.logs 的单元测试：级别解析、swallow 语义、handler 幂等。"""
 import io
 import logging
 import os
@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika import logs
+from pikapet import logs
 
 
 class LogsTestCase(unittest.TestCase):

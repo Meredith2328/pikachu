@@ -17,6 +17,9 @@ import sys
 from pathlib import Path
 
 HOME_ENV = "PIKACHU_HOME"
+# 设为 1 时跳过旧 runtime/ 迁移。测试用：隔离目录里不该把仓库真实的
+# token 搬进来（子进程自己会跑一次迁移，patch 模块变量管不到它们）。
+NO_MIGRATE_ENV = "PIKACHU_NO_MIGRATE"
 APP_DIR_NAME = "pikachu"
 
 TOKEN_NAME = "token"
@@ -135,3 +138,28 @@ def migrate_legacy(names=(TOKEN_NAME, PET_STATE_NAME)) -> list:
         write_text_atomic(dst, src.read_text(encoding="utf-8"))
         moved.append(name)
     return moved
+
+
+_migrated_once = False
+
+
+def migrate_legacy_once() -> list:
+    """进程内只跑一次的迁移，供"任何要读 token / 状态的地方"前置调用。
+
+    必须发生在**第一次读 token 之前**：否则新目录里会先懒生成一个新
+    token，而 migrate 不覆盖已存在的文件，结果是新装的副本与仍在跑的
+    旧桌宠各持一个 token，所有投递 403。
+
+    这里不抛异常：调用点是 token 读取这种基础路径，迁移不成也应让程序
+    继续走到各自更具体的报错（写不了 token / 403）。
+    """
+    global _migrated_once
+    if _migrated_once:
+        return []
+    _migrated_once = True
+    if os.environ.get(NO_MIGRATE_ENV) == "1":
+        return []
+    try:
+        return migrate_legacy()
+    except (OSError, RuntimeDirError):
+        return []

@@ -2,12 +2,11 @@ import sys
 import os
 import unittest
 import subprocess
-import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.bus import BusServer, fetch_history
-from pika.adapters.zcode import _title, _body
+from pikapet.bus import BusServer, fetch_history
+from pikapet.adapters.zcode import _title, _body
 from tests.helpers import free_port, wait_http
 
 PY = sys.executable
@@ -40,7 +39,7 @@ class TestZcodeAdapterE2E(unittest.TestCase):
         cls.bus.stop()
 
     def _run(self, *args):
-        return subprocess.run([PY, "-m", "pika.adapters.zcode", "--port", str(self.port),
+        return subprocess.run([PY, "-m", "pikapet.adapters.zcode", "--port", str(self.port),
                                *args], cwd=ROOT, capture_output=True, text=True,
                               timeout=30)
 
@@ -68,38 +67,52 @@ class TestZcodeAdapterE2E(unittest.TestCase):
     def test_bus_down_returns_3(self):
         from tests.helpers import isolated_runtime_port
         with isolated_runtime_port():   # 隔离真实回退文件，防止协商到活总线
-            r = subprocess.run([PY, "-m", "pika.adapters.zcode", "--port", "1",
+            r = subprocess.run([PY, "-m", "pikapet.adapters.zcode", "--port", "1",
                                 "x"], cwd=ROOT, capture_output=True,
                                text=True, timeout=30)
         self.assertEqual(r.returncode, 3)
         self.assertIn("总线", r.stderr)
 
 
-class TestTopLevelScript(unittest.TestCase):
+class TestUnifiedCli(unittest.TestCase):
+    """统一 CLI：三条等价入口（pikachu.py / -m pikapet / 装好的 pikachu）
+    走的都是 pikapet.cli:main，这里测前两条。"""
+
+    def _cli(self, *args, timeout=30):
+        return subprocess.run([PY, "-m", "pikapet", *args], cwd=ROOT,
+                              capture_output=True, text=True, timeout=timeout)
+
+    def _script(self, *args, timeout=30):
+        return subprocess.run([PY, "pikachu.py", *args], cwd=ROOT,
+                              capture_output=True, text=True, timeout=timeout)
+
     def test_doctor(self):
-        import socket
-        from pika.bus import BusServer
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
+        port = free_port()
         bus = BusServer(port=port).start()
         try:
-            r = subprocess.run([PY, "pikachu.py", "doctor", "--port", str(port)],
-                               cwd=ROOT, capture_output=True, text=True, timeout=60)
+            r = self._cli("doctor", "--port", str(port), timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         finally:
             bus.stop()
 
-    def test_send_via_toplevel(self):
+    def test_send_via_module(self):
         port = free_port()
         bus = BusServer(port=port).start()
         try:
-            r = subprocess.run([PY, "pikachu.py", "send", "顶层", "--port", str(port)],
-                               cwd=ROOT, capture_output=True, text=True, timeout=30)
+            r = self._cli("send", "顶层", "--port", str(port))
             self.assertEqual(r.returncode, 0, r.stderr)
-            items = fetch_history(port=port)
-            self.assertEqual(items[-1]["title"], "顶层")
+            self.assertEqual(fetch_history(port=port)[-1]["title"], "顶层")
+        finally:
+            bus.stop()
+
+    def test_send_via_repo_script(self):
+        """仓库根的 pikachu.py 只是薄壳，行为必须与 -m pikapet 一致。"""
+        port = free_port()
+        bus = BusServer(port=port).start()
+        try:
+            r = self._script("send", "薄壳", "--port", str(port))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(fetch_history(port=port)[-1]["title"], "薄壳")
         finally:
             bus.stop()
 
@@ -108,36 +121,37 @@ class TestTopLevelScript(unittest.TestCase):
         port = free_port()
         bus = BusServer(port=port).start()
         try:
-            # send 子命令 --port
-            r = subprocess.run([PY, "pikachu.py", "send", "x", "--port", str(port)],
-                               cwd=ROOT, capture_output=True, text=True, timeout=30)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            # history / health 子命令 --port
-            for cmd in ("history", "health"):
-                r = subprocess.run([PY, "pikachu.py", cmd, "--port", str(port)],
-                                   cwd=ROOT, capture_output=True, text=True,
-                                   timeout=30)
-                self.assertEqual(r.returncode, 0, r.stderr)
-            # doctor 子命令 --port
-            r = subprocess.run([PY, "pikachu.py", "doctor", "--port", str(port)],
-                               cwd=ROOT, capture_output=True, text=True, timeout=60)
+            for args in (("send", "x"), ("history",), ("health",),
+                         ("zcode", "t")):
+                r = self._cli(*args, "--port", str(port))
+                self.assertEqual(r.returncode, 0,
+                                 f"{args} 失败：{r.stderr}")
+            r = self._cli("doctor", "--port", str(port), timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
-            # zcode 子命令 --port
-            r = subprocess.run([PY, "pikachu.py", "zcode", "t", "--port", str(port)],
-                               cwd=ROOT, capture_output=True, text=True, timeout=30)
-            self.assertEqual(r.returncode, 0, r.stderr)
             # pet 子命令 --port（启动即连内嵌总线，验证不报错）
             import subprocess as _sp
-            p = _sp.Popen([PY, "pikachu.py", "pet", "--port", str(port)],
+            p = _sp.Popen([PY, "-m", "pikapet", "pet", "--port", str(port)],
                           cwd=ROOT, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
             try:
-                ok = wait_http(port)
-                self.assertTrue(ok, "pet 子命令 --port 未生效")
+                self.assertTrue(wait_http(port), "pet 子命令 --port 未生效")
             finally:
                 p.terminate()
                 p.wait(10)
         finally:
             bus.stop()
+
+    def test_codex_and_dsh_subcommands_reachable(self):
+        """codex / dsh 以前走 argparse.REMAINDER 透传，现在是正常子命令，
+        --help 必须能出（透传时顶层 --help 看不到它们的参数）。"""
+        for args in (("codex", "--help"), ("codex", "report", "--help"),
+                     ("dsh", "--help"), ("dsh", "run", "--help")):
+            r = self._cli(*args)
+            self.assertEqual(r.returncode, 0, f"{args}: {r.stderr}")
+            self.assertTrue(r.stdout.strip(), f"{args} 没输出帮助")
+
+    def test_unknown_subcommand_is_error(self):
+        r = self._cli("不存在的子命令")
+        self.assertNotEqual(r.returncode, 0)
 
 
 if __name__ == "__main__":

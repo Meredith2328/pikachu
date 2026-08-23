@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.protocol import Notification
+from pikapet.protocol import Notification
 
 
 from tests.helpers import gui_available
@@ -17,8 +17,8 @@ class TestBubbleGuiBinding(unittest.TestCase):
     def test_hover_event_updates_controller(self):
         """气泡 <Enter> 事件必须把 hover 状态送进 PetController（否则悬浮失效）。"""
         import tkinter as tk
-        from pika.pet_core import PetController
-        from pika.pet import Bubble
+        from pikapet.pet_core import PetController
+        from pikapet.pet import Bubble
 
         root = tk.Tk()
         try:
@@ -43,7 +43,7 @@ class TestBubbleGuiBinding(unittest.TestCase):
     def test_bubble_anchored_to_pet_not_root(self):
         """Bubble._place 锚点应是桌宠窗口（含隐藏时 tab），不是 root 默认值。"""
         import tkinter as tk
-        from pika.pet import Bubble
+        from pikapet.pet import Bubble
 
         root = tk.Tk()
         try:
@@ -65,8 +65,8 @@ class TestBubbleGuiBinding(unittest.TestCase):
     def test_bubble_scale_changes_card_size(self):
         """气泡缩放：bubble_scale 应改变卡片尺寸（字号/内距/尾巴随之缩放）。"""
         import tkinter as tk
-        from pika.pet import Bubble
-        from pika.protocol import Notification
+        from pikapet.pet import Bubble
+        from pikapet.protocol import Notification
 
         root = tk.Tk()
         try:
@@ -93,9 +93,8 @@ class TestBubbleGuiBinding(unittest.TestCase):
 
     def test_set_scale_rebuilds_turn_photos(self):
         """桌宠缩放：set_scale 用 NEAREST 重渲染转身帧，尺寸随缩放变化。"""
-        import os
         import tkinter as tk
-        from pika.pet import PikaPet
+        from pikapet.pet import PikaPet
         root = tk.Tk()
         try:
             pet = PikaPet.__new__(PikaPet)

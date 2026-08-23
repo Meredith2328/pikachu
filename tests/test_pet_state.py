@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika import pet_state
+from pikapet import pet_state
 from tests.helpers import gui_available, isolated_home
 
 
@@ -81,7 +81,7 @@ class TestPetState(unittest.TestCase):
 @unittest.skipUnless(gui_available(), "无 GUI 环境")
 class TestPetStateGuiIntegration(unittest.TestCase):
     def test_set_scale_persists(self):
-        from pika.pet import PikaPet
+        from pikapet.pet import PikaPet
         with isolated_home():
             pet = PikaPet(port=0, subscribe_only=True)
             try:
@@ -91,7 +91,7 @@ class TestPetStateGuiIntegration(unittest.TestCase):
                 pet._quit()
 
     def test_mute_persists_via_toggle(self):
-        from pika.pet import PikaPet
+        from pikapet.pet import PikaPet
         with isolated_home():
             pet = PikaPet(port=0, subscribe_only=True)
             try:

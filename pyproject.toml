@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pikachu"
+name = "pikachu-pet"
 description = "本地通知总线 + 像素风气泡桌宠 + 健康提醒"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -14,12 +14,40 @@ dependencies = []          # 总线/提醒/适配器纯标准库
 [project.optional-dependencies]
 gui = ["pillow"]           # 桌宠贴图透明处理
 assets = ["pillow", "scipy"]  # 重建转身帧资产（tools/build_turn_assets.py）
+dev = ["ruff"]
+
+# 装好之后就有 `pikachu` 命令，不必站在仓库根目录跑 python pikachu.py。
+# 三个适配器另给独立入口：钩子/自动化配置里写死命令时更短，且与
+# `pikachu zcode ...` 完全等价。
+[project.scripts]
+pikachu = "pikapet.cli:main"
+pikachu-zcode = "pikapet.adapters.zcode:main"
+pikachu-codex = "pikapet.adapters.codex:main"
+pikachu-dsh = "pikapet.adapters.dsh:main"
 
 [tool.setuptools]
-packages = ["pika", "pika.adapters", "pika.win", "pika.configs"]
+packages = ["pikapet", "pikapet.adapters", "pikapet.win", "pikapet.configs"]
 
 [tool.setuptools.dynamic]
-version = { attr = "pika.__version__" }
+version = { attr = "pikapet.__version__" }
 
 [tool.setuptools.package-data]
-"pika.configs" = ["*.json"]
+"pikapet.configs" = ["*.json"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+# 显式钉住规则集，不跟随 ruff 版本默认值漂移（否则升级 ruff 就红一片）。
+# 先只开"能指出真问题"的：F pyflakes（未用导入/未定义名）、E7 语句层面、
+# E9 语法错。排序与代码风格类留到以后单独一轮，不在本次混进大 diff。
+select = ["F", "E7", "E9", "W6"]
+ignore = [
+    # 模块级 import 不在文件顶部：钩子/测试要先 sys.path.insert 再 import
+    "E402",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里的局部变量常为断言可读性/持有引用而保留
+"tests/**" = ["F841"]

@@ -4,7 +4,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.protocol import Notification, ProtocolError
+from pikapet.protocol import Notification, ProtocolError
 
 
 class TestNotification(unittest.TestCase):
@@ -46,7 +46,6 @@ class TestNotification(unittest.TestCase):
 
     def test_nan_infinity_rejected(self):
         """NaN/Infinity 必须拒绝：否则 to_dict 会序列化成非法 JSON。"""
-        import math
         for bad_val in (float("nan"), float("inf"), float("-inf")):
             with self.assertRaises(ProtocolError):
                 Notification.from_dict({"title": "x", "ttl": bad_val})

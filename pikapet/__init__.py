@@ -1,7 +1,7 @@
 """皮卡丘：本地通知总线 + 桌宠 + 健康提醒。
 
 设计原则：
-- 各模块通过 pika.protocol.Notification 消息通信，不互相 import 具体实现；
+- 各模块通过 pikapet.protocol.Notification 消息通信，不互相 import 具体实现；
 - 桌面端（桌宠）是唯一贴近 Windows 的模块，其余模块平台无关；
 - 通知是"推送"而非轮询：外部软件主动 POST 到总线，桌宠通过 SSE 长连接接收。
 """

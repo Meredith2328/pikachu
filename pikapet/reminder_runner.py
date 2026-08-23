@@ -2,9 +2,9 @@
 """健康提醒的进程入口：把调度逻辑 + Windows 空闲检测 + 总线发送组装起来。
 
 用法:
-    python -m pika.reminder_runner                 # 常驻运行
-    python -m pika.reminder_runner --once          # 只跑一步（测试）
-    python -m pika.reminder_runner --config 路径   # 自定义配置
+    python -m pikapet.reminder_runner                 # 常驻运行
+    python -m pikapet.reminder_runner --once          # 只跑一步（测试）
+    python -m pikapet.reminder_runner --config 路径   # 自定义配置
 
 Sink 实现（BusSink）POST 到总线；ActivitySource 默认 Windows 空闲检测，
 可用 --fake 注入假数据源（测试用，见 tests）。
@@ -15,7 +15,6 @@ import math
 import os
 import sys
 import time
-from dataclasses import asdict
 
 from . import bus
 from .logs import configure as configure_logging

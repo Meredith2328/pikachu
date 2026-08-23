@@ -47,7 +47,7 @@ class TestFlattenTransparency(unittest.TestCase):
 
     def test_matches_reference_pixel_for_pixel(self):
         import tempfile
-        from pika.pet import _flatten_transparency
+        from pikapet.pet import _flatten_transparency
         with tempfile.TemporaryDirectory() as td:
             path = self._make_sample(td)
             got = _flatten_transparency(path)
@@ -59,15 +59,15 @@ class TestFlattenTransparency(unittest.TestCase):
     def test_all_pixels_opaque(self):
         """压平后不允许残留半透明：Tk 没有逐像素 alpha。"""
         import tempfile
-        from pika.pet import _flatten_transparency
+        from pikapet.pet import _flatten_transparency
         with tempfile.TemporaryDirectory() as td:
             path = self._make_sample(td)
             data = _flatten_transparency(path).tobytes()
             self.assertEqual(set(data[3::4]), {255})
 
     def test_real_asset_matches_reference(self):
-        from pika.pet import _flatten_transparency
-        from pika.pixtokens import ASSET
+        from pikapet.pet import _flatten_transparency
+        from pikapet.pixtokens import ASSET
         if not ASSET.exists():
             self.skipTest("仓库里没有 assets/pikachu.png")
         self.assertEqual(_flatten_transparency(ASSET).tobytes(),

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""pika.paths 的单元测试：目录解析、非法名拒绝、原子写、旧目录迁移。"""
+"""pikapet.paths 的单元测试：目录解析、非法名拒绝、原子写、旧目录迁移。"""
 import os
 import sys
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika import paths
+from pikapet import paths
 
 
 class PathsTestCase(unittest.TestCase):
@@ -139,6 +139,77 @@ class TestMigrateLegacy(PathsTestCase):
                 self.assertEqual(paths.migrate_legacy(), [])
             finally:
                 paths.legacy_runtime_dir = orig
+
+
+class TestMigrateBeforeTokenRead(PathsTestCase):
+    """迁移必须发生在第一次读 token 之前。
+
+    否则新目录里会先懒生成一个新 token，而 migrate 不覆盖已存在的文件，
+    结果是新装的副本与仍在跑的旧桌宠各持一个 token，所有投递 403。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._orig_legacy = paths.legacy_runtime_dir
+        paths._migrated_once = False
+
+    def tearDown(self):
+        paths.legacy_runtime_dir = self._orig_legacy
+        paths._migrated_once = False
+        super().tearDown()
+
+    def test_bus_token_inherits_legacy_token(self):
+        from pikapet import bus
+        with tempfile.TemporaryDirectory() as legacy_td, \
+                tempfile.TemporaryDirectory() as home_td:
+            legacy = Path(legacy_td)
+            (legacy / paths.TOKEN_NAME).write_text("l" * 64, encoding="utf-8")
+            paths.legacy_runtime_dir = lambda: legacy
+            os.environ[paths.HOME_ENV] = home_td
+            self.assertEqual(bus._load_or_create_token(), "l" * 64)
+
+    def test_client_token_inherits_legacy_token(self):
+        from pikapet import bus
+        with tempfile.TemporaryDirectory() as legacy_td, \
+                tempfile.TemporaryDirectory() as home_td:
+            legacy = Path(legacy_td)
+            (legacy / paths.TOKEN_NAME).write_text("c" * 64, encoding="utf-8")
+            paths.legacy_runtime_dir = lambda: legacy
+            os.environ[paths.HOME_ENV] = home_td
+            self.assertEqual(bus._client_token(), "c" * 64)
+
+    def test_pet_state_inherits_legacy_preferences(self):
+        import json
+        from pikapet import pet_state
+        with tempfile.TemporaryDirectory() as legacy_td, \
+                tempfile.TemporaryDirectory() as home_td:
+            legacy = Path(legacy_td)
+            (legacy / paths.PET_STATE_NAME).write_text(
+                json.dumps({"scale": 2.0, "muted": True}), encoding="utf-8")
+            paths.legacy_runtime_dir = lambda: legacy
+            os.environ[paths.HOME_ENV] = home_td
+            state = pet_state.load_state()
+            self.assertEqual(state["scale"], 2.0)
+            self.assertTrue(state["muted"])
+
+    def test_migrate_once_runs_only_once(self):
+        with tempfile.TemporaryDirectory() as legacy_td, \
+                tempfile.TemporaryDirectory() as home_td:
+            legacy = Path(legacy_td)
+            (legacy / paths.TOKEN_NAME).write_text("x" * 64, encoding="utf-8")
+            paths.legacy_runtime_dir = lambda: legacy
+            os.environ[paths.HOME_ENV] = home_td
+            self.assertEqual(paths.migrate_legacy_once(), [paths.TOKEN_NAME])
+            self.assertEqual(paths.migrate_legacy_once(), [])
+
+    def test_migrate_once_swallows_broken_legacy(self):
+        """迁移失败不能把 token 读取带崩（它是最基础的路径）。"""
+        def boom():
+            raise OSError("旧目录不可读")
+        paths.legacy_runtime_dir = boom
+        with tempfile.TemporaryDirectory() as home_td:
+            os.environ[paths.HOME_ENV] = home_td
+            self.assertEqual(paths.migrate_legacy_once(), [])
 
 
 if __name__ == "__main__":

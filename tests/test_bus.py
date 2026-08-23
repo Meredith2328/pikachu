@@ -6,10 +6,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.bus import BusServer, send_notification, fetch_health, fetch_history, SSEClient
-from pika.protocol import Notification, ProtocolError
-from tests.helpers import (bus_post_json, bus_request, bus_stream, free_port,
-                           isolated_home)
+from pikapet.bus import BusServer, send_notification, fetch_health, fetch_history, SSEClient
+from pikapet.protocol import Notification, ProtocolError
+from tests.helpers import (bus_post_json, bus_request, bus_stream, isolated_home)
 
 
 class BusTestCase(unittest.TestCase):
@@ -147,7 +146,7 @@ class TestPortNegotiation(unittest.TestCase):
         self._home.__exit__(None, None, None)
 
     def _write_port_file(self, value):
-        from pika import paths
+        from pikapet import paths
         paths.write_text_atomic(paths.port_file(create_dir=True), str(value))
 
     def test_send_falls_back_to_negotiated_port(self):
@@ -171,23 +170,23 @@ class TestPortNegotiation(unittest.TestCase):
 
     def test_garbage_port_file_raises_not_ignored(self):
         """端口文件被写坏要报出来：静默忽略会让"连不上"无从下手。"""
-        from pika import paths
-        from pika.bus import PortFileError
+        from pikapet import paths
+        from pikapet.bus import PortFileError
         paths.write_text_atomic(paths.port_file(create_dir=True), "不是端口")
         dead = self.free_dead_port()
         with self.assertRaises(PortFileError):
             fetch_health(port=dead)
 
     def test_out_of_range_port_file_raises(self):
-        from pika import paths
-        from pika.bus import PortFileError
+        from pikapet import paths
+        from pikapet.bus import PortFileError
         paths.write_text_atomic(paths.port_file(create_dir=True), "99999")
         dead = self.free_dead_port()
         with self.assertRaises(PortFileError):
             fetch_health(port=dead)
 
     def test_negotiate_false_does_not_read_port_file(self):
-        """探测"这个端口是不是 pika 总线"时不许被协商带偏。"""
+        """探测"这个端口是不是皮卡丘总线"时不许被协商带偏。"""
         self._write_port_file(self.port)
         dead = self.free_dead_port()
         with self.assertRaises(OSError):
@@ -283,7 +282,6 @@ class TestBusSlowSubscriber(unittest.TestCase):
         try:
             # 填满队列（maxsize=256）后，publish 不应阻塞
             import threading
-            import time as _time
             result = []
             def pub_many():
                 for i in range(300):
@@ -454,7 +452,7 @@ class TestBusMainBindFailure(unittest.TestCase):
     def test_main_reports_bind_failure(self):
         import contextlib
         import io
-        from pika import bus as bus_mod
+        from pikapet import bus as bus_mod
 
         class _FailingServer:
             def __init__(self, host=None, port=None):

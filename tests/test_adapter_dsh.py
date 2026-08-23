@@ -7,8 +7,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pika.bus import BusServer, fetch_history
-from pika.adapters.dsh import collapse
+from pikapet.bus import BusServer, fetch_history
+from pikapet.adapters.dsh import collapse
 from tests.helpers import free_port
 
 PY = sys.executable
@@ -46,7 +46,7 @@ class TestDshWrapperE2E(unittest.TestCase):
 
     def _run(self, *args):
         return subprocess.run(
-            [PY, "-m", "pika.adapters.dsh", *args],
+            [PY, "-m", "pikapet.adapters.dsh", *args],
             cwd=ROOT, capture_output=True, text=True, timeout=60,
             encoding="utf-8")
 

@@ -23,20 +23,19 @@ class TestRichTextLayout(unittest.TestCase):
     """富文本正文：长链接不撑破 maxw、不把行挤乱。"""
 
     def _bubble(self):
-        from pika.bubble import Bubble
+        from pikapet.bubble import Bubble
         import tkinter as tk
         root = tk.Tk()
         b = Bubble(root, on_clicked=lambda: None)
         return root, b
 
     def _layout(self, body):
-        from pika.bubble import Bubble
         root, b = self._bubble()
         f_body = b._font(size=10)
         b._cur_scale = 1.0
         res = b._layout_body(body, f_body, 300, "#188038")
         # 记录行宽（font 在 root 销毁后失效，必须在此测量）
-        widths = [sum(cell[2].measure(cell[0]) for cell in row["cells"])
+        widths = [sum(cell.font.measure(cell.text) for cell in row["cells"])
                   for row in res["lines"]]
         root.destroy()
         res["_widths"] = widths
@@ -64,7 +63,7 @@ class TestRichTextLayout(unittest.TestCase):
 
     def test_hit_link_single_click(self):
         """一次点击命中链接 → on_clicked 不触发、_open_link 只调用一次。"""
-        from pika.bubble import Bubble
+        from pikapet.bubble import Bubble
         import tkinter as tk
         root = tk.Tk()
         opened = []
@@ -89,7 +88,7 @@ class TestRichTextLayout(unittest.TestCase):
         """<Button-1> 只绑在 canvas 上，win 不应再绑——否则一次点击
         触发两次 on_click，点链接会连开两个浏览器。"""
         import tkinter as tk
-        from pika.bubble import Bubble
+        from pikapet.bubble import Bubble
         root = tk.Tk()
         b = Bubble(root, on_clicked=lambda: None)
         b.show(type("N", (), {"title": "t", "body": "[a](https://a.b)",
@@ -107,7 +106,7 @@ class TestRichTextLayout(unittest.TestCase):
         时间去重应保证只开一个浏览器。"""
         import tkinter as tk
         from unittest import mock
-        from pika.bubble import Bubble
+        from pikapet.bubble import Bubble
         root = tk.Tk()
         opened = []
         b = Bubble(root, on_clicked=lambda: None)

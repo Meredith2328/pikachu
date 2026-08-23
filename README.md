@@ -3,21 +3,21 @@
 <img width="449" height="453" alt="image" src="https://github.com/user-attachments/assets/66887430-66e8-4325-a0cd-bb73c21a2009" />
 
 本地通知总线 + 桌宠气泡 + 健康提醒。三块互相独立、可单独使用，只通过一条
-消息协议（`pika.protocol.Notification`）通信。
+消息协议（`pikapet.protocol.Notification`）通信。
 
-- **pika-bus**：监听 `127.0.0.1:7452` 的消息总线（7452 = PIKA 的手机九键
+- **总线**：监听 `127.0.0.1:7452` 的消息总线（7452 = PIKA 的手机九键
   键序，刻意挑的冷门端口防撞车）。任何软件 POST 一条 JSON 进来，
   桌宠就弹气泡。不轮询，推送靠 SSE 长连接。
-- **pika-pet**：桌面桌宠（tkinter，仅 Windows）。只负责"显示"：透明置顶小窗口、
+- **桌宠**：桌面桌宠（tkinter，仅 Windows）。只负责"显示"：透明置顶小窗口、
   气泡、拖动、右键菜单、隐藏到角落。不感知消息来源。
-- **pika-reminder**：健康提醒调度器。纯逻辑、平台无关，Windows 空闲检测作为
+- **健康提醒**：提醒调度器。纯逻辑、平台无关，Windows 空闲检测作为
   注入的 ActivitySource 实现。定时随机提醒（默认每 1~2 小时）+ 久坐提醒
   （连续工作超阈值）。
-- **pika-adapter-zcode**：ZCode 自动化 → 总线的适配器，一行命令发通知。
-- **pika-adapter-codex**：Codex → 总线的适配器。`event` 子命令处理
+- **zcode 适配器**：ZCode 自动化 → 总线的适配器，一行命令发通知。
+- **codex 适配器**：Codex → 总线的适配器。`event` 子命令处理
   `agent-turn-complete` 事件 JSON（notify/hooks 均可接），弹「这轮问了什么 +
   回答开头」；`report` 子命令与 zcode 适配器同构，供 Codex automations 汇报。
-- **pika-adapter-dsh**：DSH headless 子任务包装器。`run` 把 `dsh --profile
+- **dsh 适配器**：DSH headless 子任务包装器。`run` 把 `dsh --profile
   headless` 包在中间全程汇报（「开始 · 任务」带任务摘要 → 「完成 · 任务」带回答
   摘要或「失败 · 任务」带 stderr 尾部），stdout 原样透传，可无脑替换直接调
   dsh；`report` 子命令手动汇报。
@@ -26,18 +26,24 @@
   「开始/进行中/完成/失败 · 名称」；标题不放 emoji，级别语义由气泡徽章与
   配色表达，来源显示在 meta 行。
 
+Python 包名是 `pikapet`（PyPI 上 `pika` 是 RabbitMQ 客户端，会撞名），
+命令行入口叫 `pikachu`。
+
 ## 快速开始
 
+装一次，然后在任何目录都能用：
+
 ```bash
-# 1. 启动桌宠（内嵌总线 + 内嵌健康提醒，一条命令全起来）
-python pikachu.py pet
-
-# 2. 发一条气泡看看（在另一个终端）
-python pikachu.py send "你好" "我是皮卡丘，你写代码超过一小时了"
-
-# 3. ZCode 自动化激活时通知（hook 里调用）
-python pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件"
+pipx install .        # 或 pip install -e . 做开发
+pikachu pet           # 启动桌宠（内嵌总线 + 内嵌健康提醒，一条命令全起来）
+pikachu send "你好" "我是皮卡丘，你写代码超过一小时了"
+pikachu zcode "每日简报" --stage done --detail "生成 3 个文件"
+pikachu doctor        # 环境自检
 ```
+
+不想装也行，在仓库根目录用 `python -m pikapet <子命令>`，或
+`python pikachu.py <子命令>`——三条路走的都是同一个 `pikapet.cli:main`，
+参数与行为完全一致。
 
 桌宠默认**内嵌健康提醒**（后台线程跑调度循环，配置同 `reminder.json`），
 `--no-reminder` 可关。独立 runner 仍保留给"只跑总线不跑桌宠"的场景。
@@ -45,15 +51,33 @@ python pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件
 依赖：Python 3.9+，tkinter（桌宠）、Pillow（贴图透明处理，可选）。全部标准库
 实现总线与提醒，无需 pip 安装任何东西。
 
+## 运行时数据在哪
+
+token、端口协商文件、桌宠状态、日志都在 `%LOCALAPPDATA%\pikachu\`
+（其他平台走 XDG 的 `~/.local/share/pikachu`），**不在源码目录**——否则
+装到 site-packages 后会往包目录写文件，多份 checkout 还会各持一套 token
+互相连不上。`PIKACHU_HOME` 可覆盖（测试与多实例并存都靠它）。
+
+| 文件 | 用途 |
+|---|---|
+| `token` | 投递鉴权密钥，首次启动生成 |
+| `port` | 端口回退时的实际端口，供发送方协商 |
+| `pet_state.json` | 桌宠缩放 / 静音 / 窗口位置 |
+| `pikachu.log` | 滚动日志（`PIKACHU_LOG_LEVEL` 调级别，默认 WARNING） |
+| `hook_stdin.log` | ZCode 钩子收到的原始 stdin，供排查 |
+
+老版本把这些写在仓库的 `runtime/` 下；桌宠或总线启动时会把其中的 `token`
+与 `pet_state.json` 自动搬到新位置（不覆盖已有的），偏好不丢。
+
 ## 消息协议
 
 任何软件（不限 Python）向总线 POST（必须 `Content-Type: application/json`，
-并携带 `X-Pika-Token` 头——值在 `runtime/token`，首次启动自动生成）：
+并携带 `X-Pika-Token` 头——值在运行时目录的 `token`，首次启动自动生成）：
 
 ```bash
 curl -X POST http://127.0.0.1:7452/notify \
   -H "Content-Type: application/json" \
-  -H "X-Pika-Token: $(cat runtime/token)" \
+  -H "X-Pika-Token: $(cat "$LOCALAPPDATA/pikachu/token")" \
   -d '{"title":"该休息了","body":"起来走走","level":"warn","source":"reminder","ttl":10}'
 ```
 
@@ -82,29 +106,49 @@ token 鉴权说明：CLI / 适配器 / 钩子等**己方工具自动附带** tok
 - 总线进程被意外 kill 时，客户端在心跳超时（默认 20 秒）内检测到并自动重连；
 - 慢订阅者不阻塞发布方：队列满的连接会被断开，由客户端重连补拉；
 - 本机端口被其他软件占用时，桌宠内嵌总线自动回退到随机端口，并把实际端口
-  写入 `runtime/port`，同时打印提示；
+  写入运行时目录的 `port`，同时打印提示；
 - **端口协商**：所有发送方（CLI / 适配器 / 钩子）连不上目标端口时，自动读
-  `runtime/port` 用桌宠的实际端口重试一次——即使发生了端口回退，通知链
+  `port` 文件用桌宠的实际端口重试一次——即使发生了端口回退，通知链
   也不会断。
+
+**不做静默 fallback**。这类"看起来在跑其实全断了"的状态比直接报错难查得多，
+所以以下情况一律显式失败并留痕，而不是悄悄降级：
+
+- token 写不进盘 → 抛 `TokenError`（否则总线持内存 token、发送方读不到文件，
+  表现是所有投递 403）；
+- `port` 文件内容被写坏 → 抛 `PortFileError`（否则"消息发不出去"完全没线索）；
+- `?after=` / `?n=` 参数非法 → 返回 400（`after` 尤其危险：静默当成"无游标"
+  会让客户端以为在增量补拉、实际收到全量回放，重复弹一屏气泡）；
+- 发送方读不到 token → 记 WARNING 说明总线会 403，不再默默发裸请求；
+- 桌宠状态文件损坏 → 仍回退默认值（不该挡住启动），但一定记 WARNING。
+
+界面层那些"失败也得继续"的地方（贴图重绘、气泡定位、30fps 跟随 tick）走
+`pikapet.logs.swallow`：异常照旧不外传，但带 traceback 记一条；高频路径用
+`once=True` 首次记 WARNING、之后降 DEBUG，既不刷屏也不真静默。
+调 `PIKACHU_LOG_LEVEL=DEBUG` 能看到全部细节。
 
 ## 模块与命令
 
 ```text
-python -m pika.bus          # 独立总线（默认 7452）
-python -m pika.cli send ... # 命令行发通知
-python -m pika.cli history  # 查看最近消息
-python -m pika.cli health   # 查看总线状态
-python -m pika.pet          # 桌宠（--subscribe-only 订阅外部总线）
-python -m pika.reminder_runner   # 健康提醒（独立跑；桌宠已内嵌，通常不用）
-python -m pika.adapters.zcode <名称> --stage done --detail "说明"
-python -m pika.adapters.codex event '<JSON>'   # Codex turn-complete 事件
-python -m pika.adapters.dsh run "任务名" "任务文本"   # 包装 DSH 子任务
-python pikachu.py doctor    # 环境自检
+pikachu pet          # 桌宠（--subscribe-only 订阅外部总线，--no-reminder 关提醒）
+pikachu bus          # 独立总线（默认 7452）
+pikachu reminder     # 健康提醒（独立跑；桌宠已内嵌，通常不用）
+pikachu send ...     # 命令行发通知
+pikachu history      # 查看最近消息
+pikachu health       # 查看总线状态
+pikachu doctor       # 环境自检
+pikachu zcode <名称> --stage done --detail "说明"
+pikachu codex event '<JSON>'          # Codex turn-complete 事件
+pikachu dsh run "任务名" "任务文本"    # 包装 DSH 子任务
 ```
+
+三个适配器另有独立入口（`pikachu-zcode` / `pikachu-codex` / `pikachu-dsh`），
+钩子和自动化配置里写死命令时更短，与对应子命令完全等价。没装包时把
+`pikachu` 换成 `python -m pikapet` 即可。
 
 ## 健康提醒配置
 
-编辑 `pika/configs/reminder.json`（`reminder_runner` 会自动发现；`--config` 可指定）：
+编辑 `pikapet/configs/reminder.json`（`reminder` 子命令会自动发现；`--config` 可指定）：
 
 ```json
 {
@@ -131,7 +175,7 @@ python pikachu.py doctor    # 环境自检
 `posture` 坐姿检查；久坐长休息从 `long_categories` 里取。每类多条文案按权重
 随机轮换，不会连续重复同一句。
 
-文案在 `pika/reminder_phrases.py`，分类 + 权重，加文案不用改代码。
+文案在 `pikapet/reminder_phrases.py`，分类 + 权重，加文案不用改代码。
 
 ## ZCode 集成
 
@@ -142,8 +186,9 @@ python pikachu.py doctor    # 环境自检
 「会话完成 · <会话标题>」——标题按 stdin 字段 → 客户端会话库
 `~/.zcode/cli/db/db.sqlite` 的 `session.title`（只读查询，与界面显示一致）
 → 转录首条用户消息 → 目录名兜底；正文是最后一条回复的开头 120 字符。
-钩子永远 exit 0、总线不在时静默；原始 stdin 落在
-`runtime/hook_stdin.log` 供排查。测试见 `tests/test_zcode_hook.py`。
+钩子永远 exit 0、总线不在时不影响会话（失败会记一条 WARNING 到日志，
+不再完全静默）；原始 stdin 落在运行时目录的 `hook_stdin.log` 供排查。
+测试见 `tests/test_zcode_hook.py`。
 
 ### 自动化的开始/结束汇报（提示词约定）
 
@@ -151,9 +196,9 @@ python pikachu.py doctor    # 环境自检
 写两行 CLI 调用（结束时 Stop 钩子也会再报一次会话完成）：
 
 ```bash
-python /d/_Project/pikachu/pikachu.py zcode "每日简报" --stage start
-python /d/_Project/pikachu/pikachu.py zcode "每日简报" --stage done --detail "生成 3 个文件"
-python /d/_Project/pikachu/pikachu.py zcode "watch-inbox" --stage error --detail "权限不足"
+pikachu zcode "每日简报" --stage start
+pikachu zcode "每日简报" --stage done --detail "生成 3 个文件"
+pikachu zcode "watch-inbox" --stage error --detail "权限不足"
 ```
 
 `--stage` 决定标题事件词与配色：`start`(开始 · info) / `done`(完成 · success) /
@@ -171,9 +216,9 @@ Codex 每轮回复完成会发出 `agent-turn-complete` 事件，接法有两条
    （如 computer-use），写个两行的分发脚本先转发原有程序再调本适配器即可。
 
 ```bash
-python pikachu.py codex event '{"type":"agent-turn-complete","input_messages":["审查代码"],"last_assistant_message":"发现 3 处问题……"}'
-echo '<JSON>' | python -m pika.adapters.codex event   # 也可从 stdin 读
-python pikachu.py codex report "每日简报" --stage done --detail "生成 3 个文件"
+pikachu codex event '{"type":"agent-turn-complete","input_messages":["审查代码"],"last_assistant_message":"发现 3 处问题……"}'
+echo '<JSON>' | pikachu-codex event   # 也可从 stdin 读
+pikachu codex report "每日简报" --stage done --detail "生成 3 个文件"
 ```
 
 事件模式下总线不在也返回 0（通知钩子绝不能阻塞 Codex）；非 turn-complete
@@ -185,11 +230,11 @@ DSH 是一次性 headless agent（无钩子系统），适配器做**包装运�
 调 `dsh`，全程汇报且行为透明（stdout = 最终回答，退出码透传）：
 
 ```bash
-python pikachu.py dsh run "调研X" "任务文本……" --cwd D:\scratch --timeout 420
+pikachu dsh run "调研X" "任务文本……" --cwd D:\scratch --timeout 420
 # 超长任务文本（Windows 命令行 ~32K 上限）写文件传入：
-python pikachu.py dsh run "调研X" --task-file /tmp/dsh-task.md --cwd D:\scratch
+pikachu dsh run "调研X" --task-file /tmp/dsh-task.md --cwd D:\scratch
 # 手动汇报某个阶段（与 zcode 适配器同构）：
-python pikachu.py dsh report "调研X" --stage done --detail "结论：……"
+pikachu dsh report "调研X" --stage done --detail "结论：……"
 ```
 
 生命周期气泡：「开始 · 任务名」（带任务摘要）→「完成 · 任务名」（带回答开头）
@@ -208,7 +253,7 @@ python pikachu.py dsh report "调研X" --stage done --detail "结论：……"
   （Cascadia Code）分级排版（标题加粗、正文、来源·时间小字），中文自动回退雅黑，
   文本按像素宽折行、超宽自动换行，位置钳回屏幕内，底边小尾巴正对皮卡丘脑袋；
   **正文支持 Markdown 子集**：标题（#/##/###）、粗体、斜体、行内代码、无序/有序
-  列表、引用、分隔线、链接（`[文字](url)` 点击会打开浏览器），由 `pika/mdflush.py`
+  列表、引用、分隔线、链接（`[文字](url)` 点击会打开浏览器），由 `pikapet/mdflush.py`
   纯标准库渲染，零依赖；
 - **缩放**：鼠标滚轮或右键菜单可放大/缩小**桌宠**（像素素材按 NEAREST 重渲染，
   放大不糊、保持算法像素味）；右键菜单还可单独放大/缩小**气泡**（字号/内距/尾巴
@@ -246,25 +291,33 @@ python tools/build_turn_assets.py   # 需 PIL + scipy（如 numpy/ndimage）
 ## 架构
 
 ```text
-adapter-zcode ─┐
-adapter-codex ─┤
-adapter-dsh ───┼─► pika-bus（HTTP + SSE）─► pika-pet（桌宠）
-其他软件 ──────┤
-pika-reminder ─┘
+zcode 适配器 ─┐
+codex 适配器 ─┤
+dsh 适配器 ───┼─► 总线（HTTP + SSE）─► 桌宠（显示端）
+其他软件 ─────┤
+健康提醒 ─────┘
 ```
 
 依赖方向只有一种：发送方 → 总线 → 显示端。发送方不需要知道桌宠是否存在；
-桌宠不需要知道消息从哪来。Windows 专用代码只存在于 `pika/pet.py` 和
-`pika/win/idle.py`，其余模块可跨平台运行。
+桌宠不需要知道消息从哪来。Windows 专用代码只存在于 `pikapet/pet.py` 和
+`pikapet/win/idle.py`，其余模块可跨平台运行。
+
+这条边界是语言无关的：想换个显示端（Qt / Rust / C#），只要订阅 SSE 并按
+协议解析 JSON 就行，总线与适配器一行都不用改。
 
 ## 测试
 
 ```bash
-python -m unittest discover -s tests -v        # 单元测试
-python tests/e2e/run_all.py                     # 端到端测试（起真进程）
+python -m unittest discover -s tests -v   # 单元测试
+python tests/e2e/run_all.py               # 端到端测试（起真进程）
+ruff check .                              # 静态检查
 ```
 
-单元测试 167 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
+单元测试 258 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
 提醒器→总线→桌宠全链路、SSE 心跳保活、跨进程总线重启恢复、GUI 悬浮绑定、
 转身朝向决策（滞回/平滑/经过正面换边）等。
-测试全部使用随机端口，不依赖默认端口未被占用。
+
+测试全部使用随机端口，不依赖默认端口未被占用；运行时目录用 `PIKACHU_HOME`
+指向临时目录（子进程一起隔离），既不读也不写用户真实的 token 与偏好，本机
+正跑着桌宠也不会串台。CI 另有一个 job 验证"装出来的包能在仓库外跑通
+起总线 → 发通知 → 查历史"——这正是把运行时数据挪出源码目录要保证的事。

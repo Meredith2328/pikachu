@@ -9,9 +9,12 @@ jobs:
   test:
     runs-on: windows-latest
     env:
-      # runner 的 stderr 是 cp1252，子进程/测试打印中文会 UnicodeEncodeError；
+      # runner 的 stderr 是 cp1252；子进程/测试打印中文会 UnicodeEncodeError。
       # 强制 Python 全 UTF-8 模式（本地 GBK 控制台不受影响）
       PYTHONUTF8: "1"
+      # 运行时数据（token / port / 状态）落到 runner 的临时目录，
+      # 不碰源码树，也不依赖开发机上的既有文件
+      PIKACHU_HOME: ${{ runner.temp }}/pikachu-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,3 +24,44 @@ jobs:
         run: pip install pillow scipy
       - name: 单元测试
         run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: 端到端测试（起真进程、走真 HTTP）
+        run: python tests/e2e/run_all.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - name: ruff 静态检查
+        run: ruff check pikapet tests tools pikachu.py
+
+  install:
+    # 装出来的包必须能在仓库外跑：这正是"运行时数据别写源码目录"要保证的
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装
+        run: pip install .
+      - name: 在仓库外验证入口点
+        working-directory: ${{ runner.temp }}
+        run: |
+          pikachu --help
+          pikachu doctor
+        # doctor 在没有总线时返回 1，这里只要求它不崩
+        continue-on-error: true
+      - name: 在仓库外跑通「起总线 → 发通知 → 查历史」
+        working-directory: ${{ runner.temp }}
+        run: |
+          Start-Process pikachu -ArgumentList "bus" -PassThru | Out-Null
+          Start-Sleep -Seconds 3
+          pikachu send "CI 验证" "从仓库外发出" --level success
+          pikachu history --n 5
+        shell: pwsh

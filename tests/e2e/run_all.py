@@ -61,7 +61,7 @@ def wait_until(pred, timeout=10, interval=0.1):
 
 def http_post_headers():
     headers = {"Content-Type": "application/json"}
-    from pika.bus import _client_token
+    from pikapet.bus import _client_token
     tok = _client_token()
     if tok:
         headers["X-Pika-Token"] = tok
@@ -107,19 +107,19 @@ def run_script(py_cmd, env_extra=None, timeout=30):
 def test_standalone_bus_and_cli():
     print("\n[1] 独立总线 + CLI 客户端往返")
     port = free_port()
-    bus_proc = spawn(["-m", "pika.bus", "--port", str(port)])
+    bus_proc = spawn(["-m", "pikapet.bus", "--port", str(port)])
     try:
         ok = wait_until(lambda: http_get_json(port, "/health").get("ok"), timeout=8)
         check("总线进程启动并响应 /health", ok)
 
-        rc, out, err = run_script(["-m", "pika.cli", "--port", str(port),
-                                   "send", "E2E标题", "E2E正文", "--source", "e2e"])
+        rc, out, err = run_script(["-m", "pikapet", "send", "E2E标题", "E2E正文",
+                                   "--source", "e2e", "--port", str(port)])
         check("CLI send 退出码 0", rc == 0, err)
 
         items = http_get_json(port, "/history")["items"]
         check("历史包含消息", any(i["title"] == "E2E标题" for i in items))
 
-        rc, out, err = run_script(["-m", "pika.cli", "--port", str(port), "health"])
+        rc, out, err = run_script(["-m", "pikapet", "health", "--port", str(port)])
         check("CLI health 退出码 0", rc == 0, err)
     finally:
         bus_proc.terminate()
@@ -142,7 +142,7 @@ def test_pet_embedded_bus():
     if not gui_ok:
         print("  ⏭  跳过（无 GUI 环境）")
         return
-    pet_proc = spawn(["-m", "pika.pet", "--port", str(port)])
+    pet_proc = spawn(["-m", "pikapet.pet", "--port", str(port)])
     try:
         ok = wait_until(lambda: http_get_json(port, "/health").get("ok"), timeout=10)
         check("桌宠内嵌总线可访问", ok)
@@ -152,8 +152,8 @@ def test_pet_embedded_bus():
         # 通过 SSE 从"桌宠总线"侧收到 → 模拟桌宠内部 on_event
         import sys as _sys
         _sys.path.insert(0, ROOT)
-        from pika.bus import SSEClient
-        from pika.protocol import Notification
+        from pikapet.bus import SSEClient
+        from pikapet.protocol import Notification
         received = []
         client = SSEClient(port=port, on_event=lambda n: received.append(n))
         client.start()
@@ -169,7 +169,7 @@ def test_pet_embedded_bus():
             client.join()
 
         # 防抖：连续两次相同消息 → 桌宠控制器只弹一次
-        from pika.pet_core import PetController
+        from pikapet.pet_core import PetController
         ctrl = PetController()
         r1 = ctrl.handle(Notification(title="重复", source="x", ttl=5))
         r2 = ctrl.handle(Notification(title="重复", source="x", ttl=5))
@@ -183,7 +183,7 @@ def test_pet_embedded_bus():
 def test_reminder_full_chain():
     print("\n[3] 健康提醒（真实装配）→ 总线 → 桌宠侧全链路")
     port = free_port()
-    bus_proc = spawn(["-m", "pika.bus", "--port", str(port)])
+    bus_proc = spawn(["-m", "pikapet.bus", "--port", str(port)])
     tmpdir = tempfile.mkdtemp(prefix="pika-e2e-")
     try:
         ok = wait_until(lambda: http_get_json(port, "/health").get("ok"), timeout=8)
@@ -193,7 +193,7 @@ def test_reminder_full_chain():
 
         import sys as _sys
         _sys.path.insert(0, ROOT)
-        from pika.bus import SSEClient
+        from pikapet.bus import SSEClient
         received = []
         client = SSEClient(port=port, on_event=lambda n: received.append(n))
         client.start()
@@ -214,7 +214,7 @@ def test_reminder_full_chain():
             }), encoding="utf-8")
 
             # 常驻进程（真实时钟），等它真触发
-            proc = spawn(["-m", "pika.reminder_runner",
+            proc = spawn(["-m", "pikapet.reminder_runner",
                           "--config", str(config_path),
                           "--fake", str(fake_path), "--port", str(port),
                           "--interval", "0.2"])
@@ -243,13 +243,13 @@ def test_reminder_full_chain():
 def test_zcode_adapter_chain():
     print("\n[4] adapter-zcode → 总线 全链路")
     port = free_port()
-    bus_proc = spawn(["-m", "pika.bus", "--port", str(port)])
+    bus_proc = spawn(["-m", "pikapet.bus", "--port", str(port)])
     try:
         ok = wait_until(lambda: http_get_json(port, "/health").get("ok"), timeout=8)
         check("总线已启动", ok)
         if not ok:
             return
-        rc, out, err = run_script(["-m", "pika.adapters.zcode", "--port", str(port),
+        rc, out, err = run_script(["-m", "pikapet.adapters.zcode", "--port", str(port),
                                    "daily-brief", "--stage", "done",
                                    "--detail", "生成 3 个文件"])
         check("zcode adapter 退出码 0", rc == 0, err)
@@ -265,7 +265,7 @@ def test_zcode_adapter_chain():
 def test_sse_heartbeat():
     print("\n[5] SSE 长连接保活（空闲后仍能接收消息）")
     port = free_port()
-    bus_proc = spawn(["-m", "pika.bus", "--port", str(port)])
+    bus_proc = spawn(["-m", "pikapet.bus", "--port", str(port)])
     try:
         ok = wait_until(lambda: http_get_json(port, "/health").get("ok"), timeout=8)
         check("总线已启动", ok)

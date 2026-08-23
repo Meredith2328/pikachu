@@ -9,6 +9,7 @@ import re
 import sys
 import time
 import webbrowser
+from typing import NamedTuple
 
 import tkinter as tk
 from tkinter import font as tkfont
@@ -29,6 +30,20 @@ LINK_DEDUP_SEC = 0.8
 _WRAP_TOKEN = re.compile(r"[^\s]+[\s]*|[\s]+")
 # 锚点窗口尺寸读不到时的兜底（与桌宠默认画布同尺寸）
 DEFAULT_ANCHOR_SIZE = 180
+
+
+class Cell(NamedTuple):
+    """正文里一个可绘制片段：一段同字体同颜色的文字。
+
+    原先是变长 tuple，靠 len(cell) > 4 / > 5 判断有没有底色和链接，
+    加一个字段就要改所有下标。"""
+
+    text: str
+    style: frozenset          # {'bold','italic','code','link'} 的子集
+    font: object              # tkfont.Font
+    fg: str
+    bg: str = None            # 底色（None = 透明，保持纸白主调）
+    url: str = None           # 链接目标（None = 不可点）
 
 # SetWindowPos 参数（Win32）：置顶、不改尺寸/位置、不抢焦点、显示窗口
 HWND_TOPMOST = -1
@@ -102,16 +117,15 @@ class Bubble:
         text_x0 = pad_x + accent_w + round(8 * s)
         title_x = text_x0 + badge_r * 2 + round(9 * s)
 
-        w_title = max((f_title.measure(l) for l in title_lines), default=0)
+        w_title = max((f_title.measure(line) for line in title_lines), default=0)
         w_body = body_rows["width"]
-        w_meta = max((f_meta.measure(l) for l in meta_lines), default=0)
+        w_meta = max((f_meta.measure(line) for line in meta_lines), default=0)
         card_w = max(title_x + w_title, text_x0 + max(w_body, w_meta),
                      round(190 * s)) + pad_x
         lsp_t = f_title.metrics("linespace")
-        lsp_b = f_body.metrics("linespace")
         lsp_m = f_meta.metrics("linespace")
         h_title = len(title_lines) * lsp_t
-        # 富文本行高：每条行有各自的行高（标题/代码更大）
+        # 富文本行高：每条行有各自的行高（标题/代码更大），不用统一行距
         h_body = body_rows["height"] + (gap1 if body_rows["lines"] else 0)
         h_meta = len(meta_lines) * lsp_m + (gap2 if meta else 0)
         card_h = pad_t + h_title + h_body + h_meta + pad_b
@@ -176,19 +190,17 @@ class Bubble:
             ty += row["above"]   # 前置空隙（标题/代码块上下留白）
             cx = text_x0
             for cell in row["cells"]:
-                text, style, font, fg = cell[0], cell[1], cell[2], cell[3]
-                bg = cell[4] if len(cell) > 4 else None
-                w = font.measure(text)
-                if bg is not None:      # 先垫底色（切角药丸），再写文字
+                w = cell.font.measure(cell.text)
+                if cell.bg is not None:  # 先垫底色（切角药丸），再写文字
                     _cut_rect(canvas, cx - 1, ty - 1, cx + w + 1,
-                              ty + font.metrics("linespace") - 1, 3,
-                              fill=bg, outline="")
-                canvas.create_text(cx, ty, text=text, anchor="nw",
-                                   font=font, fill=fg)
-                if len(cell) > 5 and cell[5]:   # 带 url 的链接单元格
+                              ty + cell.font.metrics("linespace") - 1, 3,
+                              fill=cell.bg, outline="")
+                canvas.create_text(cx, ty, text=cell.text, anchor="nw",
+                                   font=cell.font, fill=cell.fg)
+                if cell.url:
                     self._links.append((cx, ty, cx + w,
-                                        ty + font.metrics("linespace"),
-                                        cell[5]))
+                                        ty + cell.font.metrics("linespace"),
+                                        cell.url))
                 cx += w
             ty += row["height"]
         ty += gap2
@@ -241,9 +253,9 @@ class Bubble:
         """把 Markdown 正文排成可绘制的行模型。
 
         返回 {"width": 最大行宽, "height": 总高, "lines": [行,...]}；
-        每行是 {"cells": [(text,style,font,fg,bg[,url])], "height": 行高,
-        "above": 前置空隙}。accent 是级别强调色，用于列表符号/引用竖线
-        等装饰性元素的点缀（正文文字仍是灰/墨主调，避免花哨）。
+        每行是 {"cells": [Cell,...], "height": 行高, "above": 前置空隙}。
+        accent 是级别强调色，用于列表符号/引用竖线等装饰性元素的点缀
+        （正文文字仍是灰/墨主调，避免花哨）。
         """
         txt = body or ""
         if not txt.strip():
@@ -290,7 +302,7 @@ class Bubble:
 
         def emit_line(cells, hgt, above=0):
             nonlocal height, width
-            w = sum(cell[2].measure(cell[0]) for cell in cells)
+            w = sum(cell.font.measure(cell.text) for cell in cells)
             # 单行宽度硬钳到 maxw：任何一行（含列表前缀叠加）都不允许
             # 把气泡撑到超过正文上限，否则"会话完成"这类长消息会撑成一条
             if w > maxw:
@@ -299,11 +311,12 @@ class Bubble:
             height += above + hgt
             lines.append({"cells": cells, "height": hgt, "above": above})
 
-        def build_cells(pieces, base_font):
-            """pieces: [(text,style[,url])]；折成若干行，每行是 cells 列表。
+        def make_cell(text, st, font, url=None):
+            return Cell(text=text, style=st, font=font, fg=style_fg(st),
+                        bg=style_bg(st), url=url)
 
-            cell 结构 (text, style, font, fg, bg[, url])——bg 是底色或 None。
-            """
+        def build_cells(pieces, base_font):
+            """pieces: [(text,style[,url])]；折成若干行，每行是 Cell 列表。"""
             row_cells = []
             cur_w = 0
             out_rows = []
@@ -311,7 +324,6 @@ class Bubble:
                 text, st = piece[0], piece[1]
                 url = piece[2] if len(piece) > 2 else None
                 f = style_font(st)
-                bg = style_bg(st)
                 for token in self._split_for_wrap(text):
                     tw = f.measure(token)
                     if tw > maxw:
@@ -322,31 +334,25 @@ class Bubble:
                                 out_rows.append(row_cells)
                                 row_cells = []
                                 cur_w = 0
-                            cell = (ch, st, f, style_fg(st), bg)
-                            if url is not None:
-                                cell = cell + (url,)
-                            row_cells.append(cell)
+                            row_cells.append(make_cell(ch, st, f, url))
                             cur_w += f.measure(ch)
                         continue
                     if cur_w + tw > maxw and row_cells:
                         out_rows.append(row_cells)
                         row_cells = []
                         cur_w = 0
-                    cell = (token, st, f, style_fg(st), bg)
-                    if url is not None:
-                        cell = cell + (url,)
-                    row_cells.append(cell)
+                    row_cells.append(make_cell(token, st, f, url))
                     cur_w += tw
             if row_cells:
                 out_rows.append(row_cells)
             if not out_rows:      # 全空
-                out_rows.append([("", "", base_font, PIX_TEXT, None)])
+                out_rows.append([Cell("", frozenset(), base_font, PIX_TEXT)])
             return out_rows
 
         rows = mdflush.render(txt)
         for kind, segs in rows:
             if kind == "rule":
-                emit_line([("─" * 26, "rule", f_body, PIX_MUTE, None)],
+                emit_line([Cell("─" * 26, frozenset(), f_body, PIX_MUTE)],
                           f_body.metrics("linespace"))
                 continue
             if kind.startswith("h"):
@@ -357,21 +363,18 @@ class Bubble:
                     h1_above = 0  # 标题只第一个留空
                 continue
             if kind == "quote":
-                cells = [("│ ", "quote", f_body, accent, None)]
+                cells = [Cell("│ ", frozenset(), f_body, accent)]
                 for seg in segs:
-                    t, st = seg[0], seg[1]
-                    cell = (t, st, style_font(st), style_fg(st),
-                            style_bg(st))
-                    if len(seg) > 2:            # 链接带 url
-                        cell = cell + (seg[2],)
-                    cells.append(cell)
+                    cells.append(make_cell(
+                        seg[0], seg[1], style_font(seg[1]),
+                        seg[2] if len(seg) > 2 else None))
                 emit_line(cells, f_body.metrics("linespace"))
                 continue
             # para / list：列表加项目符号
             base_font = f_body
             if kind == "list":
                 # 列表符号用级别强调色点缀（其余文字仍走 build_cells 灰/墨）
-                prefix_cells = [("· ", "list", f_lst, accent, None)]
+                prefix_cells = [Cell("· ", frozenset(), f_lst, accent)]
                 body_cells = build_cells(segs, base_font)
                 if body_cells:
                     emit_line(prefix_cells + body_cells[0],

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """适配器共享的纯函数：文案截断与阶段映射。
 
-各适配器仍独立可运行（只依赖 pika.bus / pika.protocol），但不再各抄
+各适配器仍独立可运行（只依赖 pikapet.bus / pikapet.protocol），但不再各抄
 一份 collapse 和 stage 表——统一标题语法「{事件词} · {名称}」也由
 这里的 stage_title 一处定义。
 """

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """桌宠状态持久化：缩放 / 静音 / 窗口位置，重启不丢。
 
-状态文件在运行时目录（见 pika.paths）。读的一侧宽容——文件不存在是首次
+状态文件在运行时目录（见 pikapet.paths）。读的一侧宽容——文件不存在是首次
 启动的正常情况，内容坏了也不该挡住桌宠启动，回退默认值即可，但**坏内容
 一定记一条日志**，不静默。写的一侧用原子替换，失败记 WARNING（丢一次
 偏好不值得崩 UI，但用户改了设置却存不上应该有迹可循）。
@@ -32,6 +32,7 @@ def state_file():
 
 def load_state() -> dict:
     """读状态；文件缺失走默认值，内容异常记日志后走默认值。"""
+    paths.migrate_legacy_once()   # 老用户的偏好在旧 runtime/ 里，先搬过来
     state = dict(_DEFAULTS)
     path = state_file()
     if not path.is_file():

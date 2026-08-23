@@ -3,7 +3,7 @@
 
 由 ZCode 的 hooks 机制以 process 方式调用（stdin 收到事件 JSON）。设计约束：
 - 永远快速退出且 exit 0——任何异常都不能阻塞或报错拖累会话；
-- 发送复用 pika.bus.send_notification（本机固定默认端口），桌宠不在时
+- 发送复用 pikapet.bus.send_notification（本机固定默认端口），桌宠不在时
   静默放弃，不重试不告警；
 - 把原始 stdin 追加进 runtime/hook_stdin.log，便于后续核对字段。
 
@@ -26,10 +26,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pika import paths                          # noqa: E402
-from pika.bus import send_notification          # noqa: E402
-from pika.logs import get_logger, swallow       # noqa: E402
-from pika.protocol import Notification          # noqa: E402
+from pikapet import paths                       # noqa: E402
+from pikapet.bus import send_notification        # noqa: E402
+from pikapet.logs import get_logger, swallow     # noqa: E402
+from pikapet.protocol import Notification        # noqa: E402
 
 log = get_logger("hook.zcode")
 ZCODE_DB = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
@@ -48,8 +48,8 @@ PAYLOAD_TITLE_KEYS = ("title", "session_title", "sessionTitle")
 
 def collapse(text: str, limit: int = SNIPPET_LEN) -> str:
     """压平空白并截到 limit 字符（超出补省略号）。实现收敛在
-    pika.adapters.common.collapse，这里保留默认值方便调用点。"""
-    from pika.adapters.common import collapse as _collapse
+    pikapet.adapters.common.collapse，这里保留默认值方便调用点。"""
+    from pikapet.adapters.common import collapse as _collapse
     return _collapse(text, limit)
 
 
@@ -204,7 +204,7 @@ def append_stdin_log(event: str, raw: str):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="ZCode hook → pika pet")
+    parser = argparse.ArgumentParser(description="ZCode hook → 皮卡丘桌宠")
     parser.add_argument("--event", default="Stop")
     args = parser.parse_args(argv)
 
