@@ -18,3 +18,8 @@ runtime/
 .ruff_cache/
 .pytest_cache/
 .mimosa/
+
+# 构建输入资产（不是运行产物）：只有重建 assets/turn 帧时才需要，
+# 留在本地即可，不进仓库。运行必需的 assets/turn/ 与 pikachu.png 照常跟踪。
+assets/pikachu_turn_v4.mp4
+assets/pikachu_raw.png

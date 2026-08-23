@@ -25,6 +25,10 @@
 
 用法：
     C:\\Software\\Miniconda\\envs\\moni\\python.exe tools\\build_turn_assets.py
+
+注意：源视频 assets/pikachu_turn_v4.mp4 是构建输入、不进仓库（见
+.gitignore）——生成好的 assets/turn/ 才是运行必需的产物。要重建帧资产
+得先把源视频放回该路径。
 """
 import json
 import sys
