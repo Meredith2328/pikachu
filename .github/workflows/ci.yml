@@ -51,12 +51,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 安装
-        run: pip install .
+      - name: 安装（带 gui 附加依赖，让 doctor 能全绿）
+        # 不装 Pillow 的话 doctor 会因为"贴图透明处理降级"返回 1，
+        # 把这个 job 判失败——但它检查的是可选依赖，不该掩盖真问题
+        run: pip install ".[gui]"
       - name: 在仓库外验证入口点
         working-directory: ${{ runner.temp }}
         run: pikachu --help
-      - name: 在仓库外跑通「起总线 → 发通知 → 查历史」
+      - name: 在仓库外跑通「起总线 → 发通知 → 查历史 → 自检」
         working-directory: ${{ runner.temp }}
         shell: pwsh
         run: |
