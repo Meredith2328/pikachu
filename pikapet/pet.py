@@ -19,6 +19,7 @@ import json
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -53,6 +54,11 @@ MAGENTA = (255, 0, 255, 255)
 
 def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
+
+
+# 偏好自动落盘的最小间隔（秒）。正常退出会存一次，但被强杀/注销时走不到
+# 那条路；这里定期兜底，内容没变就不写盘。
+AUTOSAVE_SEC = 5.0
 
 
 # 气泡缩放 → 状态气泡的信息量。缩放调的是"显示多少内容"，不只是字号：
@@ -166,6 +172,10 @@ class PikaPet:
         self._status_visible = False
         self._press = None
         self._moved = False
+        # 偏好自动落盘的节流与去重：快照与磁盘一致时不写盘。
+        # 初值置 None 表示"还没比过"，第一次 tick 会按当时的真实值建立基线
+        self._last_autosave = time.monotonic()
+        self._saved_snapshot = None
 
         self.canvas.bind("<ButtonPress-1>", self._start_press)
         self.canvas.bind("<B1-Motion>", self._on_move)
@@ -343,10 +353,40 @@ class PikaPet:
             self._controller.tick()
         with swallow(log, "消费 UI 队列", once=True):
             self._drain_ui_queue()
+        with swallow(log, "偏好自动落盘", once=True):
+            self._autosave_state()
         try:
             self._tick_job = self.root.after(500, self._tick_ui)
         except tk.TclError:
             log.debug("root 已销毁，UI tick 结束")
+
+    def _autosave_state(self):
+        """偏好有变化就落盘（节流到 AUTOSAVE_SEC）。
+
+        `_quit` 里已经存过一次，但那条路只在"正常退出"时走到——任务管理器
+        结束进程、注销、断电都不会经过它，用户改了半天的大小和位置就白改了。
+        这里定期兜一次底；内容与上次落盘一致就跳过，不会平白磨硬盘。
+        """
+        now = time.monotonic()
+        if now - self._last_autosave < AUTOSAVE_SEC:
+            return
+        self._last_autosave = now
+        try:
+            # geometry 是异步的：不 flush 一次，刚创建/刚挪过的窗口会读到
+            # 占位的 (0,0)，下一次 tick 就会误判成"位置变了"而多写一次盘
+            self.root.update_idletasks()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+        except tk.TclError:
+            return          # 窗口已销毁，退出流程会负责最后一次保存
+        snapshot = (round(self.scale, 4), round(self.bubble_scale, 4),
+                    self._controller.muted, x, y)
+        if snapshot == self._saved_snapshot:
+            return
+        # 首次有效落盘照样写：不能只"建立基线"就返回——启动后头几秒内改了
+        # 大小又被强杀的话，那次改动就丢了。内容通常与磁盘一致，多写一次
+        # 小文件的代价可以忽略。
+        self._saved_snapshot = snapshot
+        self._save_state("scale", "bubble_scale", "muted", "x", "y")
 
     # ---- 贴图 ----
     def _load_asset(self):
@@ -496,10 +536,21 @@ class PikaPet:
         # 桌宠尺寸变了：气泡跟着重定位（仍贴脑袋）
         if getattr(self, "bubble", None) is not None:
             self.bubble.reposition()
-        self._save_state("scale")
+        # 缩放会顺带挪窗口（recenter 保持视觉中心，且要钳回屏幕内），
+        # 所以位置得一起存——只存 scale 的话，下次启动会用上一次拖动时的
+        # 旧坐标，皮卡丘"自己跳了一下"
+        if recenter:
+            self._save_state("scale", "x", "y")
+        else:
+            self._save_state("scale")
 
     def _save_state(self, *fields):
         """把指定字段落盘（拖动结束时存位置、缩放/静音变化时存对应项）。"""
+        if "x" in fields or "y" in fields:
+            # geometry() 是异步的：不先 flush 一次，winfo_x/y 读到的还是
+            # 改动前的旧坐标，存下去下次启动就跳位置
+            with swallow(log, "读取窗口坐标前刷新几何"):
+                self.root.update_idletasks()
         mapping = {
             "scale": lambda: self.scale,
             "bubble_scale": lambda: self.bubble_scale,
@@ -767,8 +818,10 @@ class PikaPet:
                 self.server.stop()
         with swallow(log, "停止提醒线程"):
             self._stop_reminder()
-        with swallow(log, "退出前保存窗口位置"):
-            self._save_state("x", "y")
+        # 退出前把全部偏好存一遍（不只是位置）：滚轮缩放、气泡缩放、静音
+        # 各自的入口都已经即时落盘了，这里是最后一道保险
+        with swallow(log, "退出前保存偏好"):
+            self._save_state("scale", "bubble_scale", "muted", "x", "y")
         self.root.destroy()
 
     def mainloop(self):
