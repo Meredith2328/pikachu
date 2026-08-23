@@ -5,17 +5,37 @@ kind 区分"通知气泡"与"状态气泡"：状态气泡常驻不自动隐藏�
 PetController 管理生命周期，二者互不误关。Canvas 手绘（Tk 无逐像素
 alpha，靠 transparentcolor 挖掉品红背景）。"""
 import ctypes
+import re
+import sys
 import time
+import webbrowser
 
 import tkinter as tk
 from tkinter import font as tkfont
 
+from .logs import get_logger, swallow
 from .protocol import Notification
 from .pixtokens import (BG, BUBBLE_FONT, BUBBLE_FONT_FALLBACK, LEVEL_STYLE,
                         MAX_TEXT_W, PIX_ACCENT, PIX_BORDER_W, PIX_INK,
                         PIX_MUTE, PIX_PANEL, PIX_PAPER, PIX_SHADOW,
                         PIX_SHADOW_GAP, PIX_TEXT, _cut_rect, _wrap)
 from . import mdflush
+
+log = get_logger("bubble")
+
+# 同一链接在这段时间内的重复点击只开一次浏览器（桌面双击会触发两次）
+LINK_DEDUP_SEC = 0.8
+# 折行切词：连续非空白并吞掉尾随空白，或纯空白串
+_WRAP_TOKEN = re.compile(r"[^\s]+[\s]*|[\s]+")
+# 锚点窗口尺寸读不到时的兜底（与桌宠默认画布同尺寸）
+DEFAULT_ANCHOR_SIZE = 180
+
+# SetWindowPos 参数（Win32）：置顶、不改尺寸/位置、不抢焦点、显示窗口
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
 
 
 class Bubble:
@@ -36,6 +56,8 @@ class Bubble:
         self._last_notif = None
         self._cur_scale = 1.0
         self._links = []   # [(x1,y1,x2,y2,url)] 供点击命中
+        self._last_link_url = None   # 链接点击去重：上次打开的 url 与时刻
+        self._last_link_ts = 0.0
 
     def show(self, notif: Notification, kind: str = "notice"):
         self.close()
@@ -46,14 +68,11 @@ class Bubble:
         win.attributes("-topmost", True)
         try:
             win.attributes("-transparentcolor", BG)
-        except tk.TclError:
-            pass
+        except tk.TclError as e:
+            # 非 Windows 或不支持该属性：气泡会带一块品红背景，但仍可读
+            log.debug("透明色属性不可用，气泡背景不透明：%s", e)
 
         scale = getattr(self.pet, "bubble_scale", 1.0) if self.pet else 1.0
-
-        f_title = self._font(size=11, weight="bold")
-        f_body = self._font(size=10)
-        f_meta = self._font(size=8)
 
         accent, glyph = LEVEL_STYLE.get(notif.level, LEVEL_STYLE["info"])
         meta = notif.source
@@ -206,13 +225,16 @@ class Bubble:
         """等宽字体带 CJK 回退：优先 Cascadia Code，缺失退回 Consolas。
 
         weight ∈ normal/bold；slant ∈ roman/italic（Tk 用 slant 表斜体，
-        不接受 weight='italic'）。"""
+        不接受 weight='italic'）。两个字体族都取不到时用 Tk 默认族——
+        这一步会记 WARNING，因为字体族变了排版宽度也会变。"""
         for fam in (BUBBLE_FONT, BUBBLE_FONT_FALLBACK):
             try:
                 return tkfont.Font(family=fam, size=size, weight=weight,
                                    slant=slant)
-            except Exception:
-                continue
+            except tk.TclError as e:
+                log.debug("字体族 %s 不可用：%s", fam, e)
+        log.warning("等宽字体族 %s / %s 都不可用，改用 Tk 默认族",
+                    BUBBLE_FONT, BUBBLE_FONT_FALLBACK)
         return tkfont.Font(size=size, weight=weight, slant=slant)
 
     def _layout_body(self, body, f_body, maxw, accent):
@@ -367,38 +389,34 @@ class Bubble:
         return {"width": width, "height": height, "lines": lines}
 
     def _open_link(self, url):
-        """点击链接：用系统默认浏览器打开（失败则忽略）。
+        """点击链接：用系统默认浏览器打开。
 
         加 800ms 时间去重：真实桌面双击会触发两次 <Button-1>，每次
         都命中链接区，不加去重会连开两个浏览器。仅对"同 url 相邻两次"
-        去重，不同 url 或间隔稍长的再次点击仍会开。"""
-        try:
-            now = time.time()
-            if (getattr(self, "_last_link_url", None) == url
-                    and now - getattr(self, "_last_link_ts", 0) < 0.8):
-                return
-            self._last_link_url = url
-            self._last_link_ts = now
-            import webbrowser
+        去重，不同 url 或间隔稍长的再次点击仍会开。
+
+        打不开要记 WARNING：用户点了链接却什么都没发生，是需要线索的。"""
+        now = time.time()
+        if (self._last_link_url == url
+                and now - self._last_link_ts < LINK_DEDUP_SEC):
+            log.debug("忽略 %ss 内对同一链接的重复点击：%s",
+                      LINK_DEDUP_SEC, url)
+            return
+        self._last_link_url = url
+        self._last_link_ts = now
+        with swallow(log, f"打开链接 {url}"):
             webbrowser.open(url)
-        except Exception:
-            pass
 
     @staticmethod
     def _split_for_wrap(text):
         """按词切分（保持连续字母/数字/中文字符串，空格并入前一词尾），
         供折行用；避免"词 + 空格"被拆开导致词尾孤悬。"""
-        import re
-        return re.findall(r"[^\s]+[\s]*|[\s]+", text)
-
-
+        return _WRAP_TOKEN.findall(text)
 
     def _hover(self, on: bool):
         if self.controller is not None:
-            try:
+            with swallow(log, "更新悬浮状态"):
                 self.controller.set_hover(on)
-            except Exception:
-                pass
 
     def _place(self, win):
         # 隐藏到角落时以 ⚡ tab 窗口为锚点；否则锚在主宠窗口
@@ -412,12 +430,14 @@ class Bubble:
             ay = anchor.winfo_rooty()
             aw = anchor.winfo_width()
             ah = anchor.winfo_height()
-        except tk.TclError:
-            ax, ay, aw, ah = 0, 0, 180, 180
+        except tk.TclError as e:
+            # 锚点窗口刚被销毁：按默认尺寸摆放，气泡仍然可见
+            log.debug("读取锚点窗口几何失败，改用默认值：%s", e)
+            ax, ay, aw, ah = 0, 0, DEFAULT_ANCHOR_SIZE, DEFAULT_ANCHOR_SIZE
         if aw <= 1:
-            aw = 180
+            aw = DEFAULT_ANCHOR_SIZE
         if ah <= 1:
-            ah = 180
+            ah = DEFAULT_ANCHOR_SIZE
         win.update_idletasks()
         bw_w = win.winfo_reqwidth()
         bw_h = win.winfo_reqheight()
@@ -427,39 +447,44 @@ class Bubble:
         if y < 0:
             y = ay + ah + gap
         # 钳回屏幕内：桌宠贴边时气泡不能跑出屏幕
-        try:
-            sw = win.winfo_screenwidth()
-            x = max(4, min(x, sw - bw_w - 4))
-        except tk.TclError:
-            pass
+        sw = win.winfo_screenwidth()
+        x = max(4, min(x, sw - bw_w - 4))
         win.geometry(f"+{int(x)}+{int(y)}")
 
     def _no_activate(self, win):
-        """弹出气泡后不抢占前台焦点（SWP_NOACTIVATE）。"""
-        try:
+        """弹出气泡后不抢占前台焦点（SWP_NOACTIVATE）。
+
+        非 Windows 平台没有这套 API，直接跳过（气泡会抢焦点，但能用）。"""
+        if sys.platform != "win32":
+            return
+        with swallow(log, "设置气泡不抢焦点", once=True):
             hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
             ctypes.windll.user32.SetWindowPos(
-                hwnd, -1, 0, 0, 0, 0,
-                0x0001 | 0x0002 | 0x0010 | 0x0040)
-        except Exception:
-            pass
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
 
     def reposition(self):
         """皮卡丘移动/缩放后重定位气泡，让它始终贴着桌宠。
 
         仅当气泡可见时调用（内部对锚点/坐标做钳制，不会跑出屏幕）。"""
         if self.win is not None:
-            try:
+            with swallow(log, "重定位气泡", once=True):
                 self._place(self.win)
-            except Exception:
-                pass
+
+    def redraw(self):
+        """按当前缩放重画当前气泡（气泡字号变了要立刻看到效果）。
+
+        气泡不可见时什么都不做。调用方不必自己去拿"上一条通知"。"""
+        if self.win is None or self._last_notif is None:
+            return
+        self.show(self._last_notif, kind=self.kind)
 
     def close(self):
         if self.win is not None:
             try:
                 self.win.destroy()
-            except Exception:
-                pass
+            except tk.TclError as e:
+                log.debug("气泡窗口已不存在：%s", e)
         self.win = None
         self.frame = None
         self.kind = None

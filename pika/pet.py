@@ -44,6 +44,45 @@ log = get_logger("pet")
 
 DEFAULT_PORT = bus.DEFAULT_PORT
 
+# 半透明像素的判定阈值：alpha 低于 ALPHA_CUT，或亮度低于 LUM_CUT 的
+# 半透明像素，都当作"该被挖掉的背景"填成透明品红；其余半透明像素直接
+# 压成不透明（Tk 没有逐像素 alpha，只能二选一）
+ALPHA_CUT = 32
+LUM_CUT = 150
+MAGENTA = (255, 0, 255, 255)
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(v, hi))
+
+
+def _flatten_transparency(path):
+    """把 RGBA 贴图压平成"不透明 + 透明品红"两色 alpha。
+
+    用整图运算替代逐像素 Python 循环：原实现对 180×180 尚可，但换大图时
+    每次启动都要跑几万次解释器循环。
+
+    亮度判定刻意不走 convert("L")：后者把加权和四舍五入到整数，恰好落在
+    阈值上的像素判定会翻转（实测 assets/pikachu.png 里有 lum=149.718 的
+    像素被舍成 150，于是该挖掉的背景没被挖掉）。这里改成整数比较：
+    0.299r + 0.587g + 0.114b < 150 两边乘 1000，用 bytes 直接算，
+    与原浮点实现逐点一致。
+    """
+    from PIL import Image
+    im = Image.open(path).convert("RGBA")
+    r, g, b, a = (band.tobytes() for band in im.split())
+    dark_cut = LUM_CUT * 1000
+    holes = bytes(
+        255 if (av < 255 and (av < ALPHA_CUT
+                              or 299 * rv + 587 * gv + 114 * bv < dark_cut))
+        else 0
+        for rv, gv, bv, av in zip(r, g, b, a))
+    mask = Image.frombytes("L", im.size, holes)
+    flat = im.copy()
+    flat.putalpha(255)                      # 其余半透明像素压成不透明
+    flat.paste(MAGENTA, (0, 0), mask)       # 挖掉的部分填透明品红
+    return flat
+
 
 
 # ----------------------------------------------------------------------
@@ -139,14 +178,17 @@ class PikaPet:
     # ---- 内嵌健康提醒 ----
     def _start_reminder(self):
         """后台线程跑提醒调度循环。配置读 configs/reminder.json（与独立
-        runner 同源），坏配置/缺依赖只打日志不挡桌宠启动。"""
+        runner 同源），坏配置/缺依赖只报错不挡桌宠启动。"""
         try:
             from .reminder import ReminderScheduler
             from .reminder_runner import load_config
             from .win.idle import WinIdleSource
             cfg = load_config()
-        except Exception as e:
+        except (ImportError, OSError, ValueError) as e:
+            # 提醒是可选功能，配置写错不该连桌宠都起不来；但要明确报出来，
+            # 否则用户改了 reminder.json 却一直没提醒，完全不知道为什么
             print(f"提醒器未启动（配置或依赖问题）：{e}", file=sys.stderr)
+            log.error("提醒器未启动：%s", e, exc_info=True)
             return
 
         scheduler = ReminderScheduler(
@@ -156,10 +198,9 @@ class PikaPet:
 
         def loop():
             while not stop.is_set():
-                try:
+                # 单步异常不杀线程，下一秒继续；高频循环用 once 限流
+                with swallow(log, "提醒调度单步", once=True):
                     scheduler.step()
-                except Exception:
-                    pass  # 单步异常不杀线程，下一秒继续
                 stop.wait(1.0)
 
         self._reminder_stop = stop
@@ -178,8 +219,9 @@ class PikaPet:
                                  source=source, ttl=12.0)
                 try:
                     pet._ui_queue.put_nowait(n)
-                except Exception:
-                    pass  # 队列满/退出中：丢弃
+                except queue.Full:
+                    # UI 队列满说明主线程卡住了，这条提醒就丢了——是真问题
+                    log.warning("UI 队列已满，丢弃提醒：%s", title)
 
             last_send_ok = True
 
@@ -200,7 +242,9 @@ class PikaPet:
                 info = bus.fetch_health(port=port, timeout=0.5,
                                         negotiate=False)
                 external = info.get("ok") is True
-            except Exception:
+            except OSError as e:
+                # 连不上是最常见的情况（没有外部总线），DEBUG 即可
+                log.debug("探测外部总线失败，改为内嵌：%s", e)
                 external = False
         if subscribe_only or external:
             # 已有独立总线在跑，订阅它
@@ -236,8 +280,11 @@ class PikaPet:
         # Tcl_AsyncDelete 崩溃，改为投递线程安全队列，由主线程 tick 消费
         try:
             self._ui_queue.put_nowait(n)
-        except Exception:
-            pass  # 队列满/退出中：丢弃，下一条重连补拉会再送
+        except queue.Full:
+            # 队列满：这条丢了，但 SSE 游标不推进（异常冒回 _emit），
+            # 重连后会带 after=<旧mid> 重新拉到
+            log.warning("UI 队列已满，丢弃通知：%s", n.title)
+            raise
 
     def _drain_ui_queue(self):
         """主线程消费后台线程投递的通知（SSE / 内嵌提醒共用）。"""
@@ -246,10 +293,8 @@ class PikaPet:
                 n = self._ui_queue.get_nowait()
             except queue.Empty:
                 return
-            try:
+            with swallow(log, "处理通知"):
                 self._controller.handle(n)
-            except Exception:
-                pass
 
     # ---- 控制器回调 ----
     def _bubble_show(self, n: Notification):
@@ -268,18 +313,16 @@ class PikaPet:
             self._controller.dismiss()
 
     def _tick_ui(self):
-        try:
+        # 每 500ms 一次的 UI tick：单次失败不能停掉整个循环，否则气泡
+        # 再也不会自动消失。用 once 限流，避免坏状态把日志刷满
+        with swallow(log, "控制器 tick", once=True):
             self._controller.tick()
-        except Exception:
-            pass
-        try:
+        with swallow(log, "消费 UI 队列", once=True):
             self._drain_ui_queue()
-        except Exception:
-            pass
         try:
             self._tick_job = self.root.after(500, self._tick_ui)
-        except Exception:
-            pass  # root 已销毁
+        except tk.TclError:
+            log.debug("root 已销毁，UI tick 结束")
 
     # ---- 贴图 ----
     def _load_asset(self):
@@ -287,58 +330,45 @@ class PikaPet:
             return
         path = ASSET
         if not path.exists():
+            log.warning("贴图 %s 不存在，改用手绘兜底图", path)
             self._draw_fallback()
             return
         self._static_pil = None
         try:
-            from PIL import Image
-            im = Image.open(path).convert("RGBA")
-            px = im.load()
-            changed = False
-            for y in range(im.size[1]):
-                for x in range(im.size[0]):
-                    r, g, b, a = px[x, y]
-                    if a < 255:
-                        lum = 0.299 * r + 0.587 * g + 0.114 * b
-                        if a < 32 or lum < 150:
-                            px[x, y] = (255, 0, 255, 255)
-                            changed = True
-                        else:
-                            px[x, y] = (r, g, b, 255)
-            self._static_pil = im  # 缓存底图，缩放时 NEAREST 重渲染
-        except Exception:
-            self._static_pil = None
+            self._static_pil = _flatten_transparency(path)
+        except ImportError as e:
+            # 没装 Pillow：退回 Tk 自带的 PhotoImage（不做透明处理）
+            log.info("Pillow 不可用（%s），静态贴图不做透明压平", e)
+        except (OSError, ValueError) as e:
+            log.warning("贴图 %s 处理失败，改用 Tk 直接加载：%s", path, e)
         if self._static_pil is None:
             try:
                 # 显式钉 master：多 Tk 实例（测试/嵌入）时不绑错默认 root
                 self.photo = tk.PhotoImage(file=str(path), master=self.root)
-            except Exception:
+            except tk.TclError as e:
+                log.error("贴图 %s 无法加载，改用手绘兜底图：%s", path, e)
                 self.photo = None
+                self._draw_fallback()
+                return
         self._rebuild_static_photo()
 
     def _rebuild_static_photo(self):
         """按 self.scale 用 NEAREST 重渲染静态贴图。"""
         from PIL import Image, ImageTk
-        root = getattr(self, "_static_pil", None)
-        if root is None:
+        base = getattr(self, "_static_pil", None)
+        if base is None:
             return
         scale = self.scale or 1.0
-        im = root
+        im = base
         if scale != 1.0:
-            im = im.resize((max(1, round(root.size[0] * scale)),
-                            max(1, round(root.size[1] * scale))), Image.NEAREST)
+            im = im.resize((max(1, round(base.size[0] * scale)),
+                            max(1, round(base.size[1] * scale))), Image.NEAREST)
         self.photo = ImageTk.PhotoImage(im, master=self.root)
         self.canvas_w = self.photo.width()
         self.canvas_h = self.photo.height()
-        try:
-            self.canvas.configure(width=self.canvas_w, height=self.canvas_h)
-        except Exception:
-            pass
+        self.canvas.configure(width=self.canvas_w, height=self.canvas_h)
         if self._img_id is not None:
-            try:
-                self.canvas.delete(self._img_id)
-            except Exception:
-                pass
+            self.canvas.delete(self._img_id)
         self._img_id = self.canvas.create_image(
             self.canvas_w // 2, self.canvas_h // 2, image=self.photo)
 
@@ -349,17 +379,25 @@ class PikaPet:
         画布按帧的实际尺寸加宽，窗口跟着变宽，贴图视觉尺寸不变。
         底帧以 PIL RGBA 缓存（保留 alpha 与透明品红），缩放时用 NEAREST
         重渲染，像素风不糊。"""
-        paths = turn_frame_paths(directory or TURN_DIR)
-        if paths is None:
+        frames = turn_frame_paths(directory or TURN_DIR)
+        if frames is None:
+            log.info("转身帧资产不完整（%s），鼠标跟随停用，回退静态贴图",
+                     directory or TURN_DIR)
             return False
-        left_paths, right_paths = paths
+        left_paths, right_paths = frames
         try:
             from PIL import Image
             self._turn_left_pil = [Image.open(str(p)).convert("RGBA")
                                    for p in left_paths]
             self._turn_right_pil = [Image.open(str(p)).convert("RGBA")
                                     for p in right_paths]
-        except Exception:
+        except ImportError as e:
+            log.info("Pillow 不可用（%s），鼠标跟随停用", e)
+            self._turn_left_pil = []
+            self._turn_right_pil = []
+            return False
+        except (OSError, ValueError) as e:
+            log.warning("转身帧读取失败，鼠标跟随停用：%s", e)
             self._turn_left_pil = []
             self._turn_right_pil = []
             return False
@@ -394,15 +432,9 @@ class PikaPet:
         pw = max(p.width() for p in self._turn_left + self._turn_right)
         ph = max(p.height() for p in self._turn_left + self._turn_right)
         self.canvas_w, self.canvas_h = pw + 8, ph + 6
-        try:
-            self.canvas.configure(width=self.canvas_w, height=self.canvas_h)
-        except Exception:
-            pass
+        self.canvas.configure(width=self.canvas_w, height=self.canvas_h)
         if self._img_id is not None:
-            try:
-                self.canvas.delete(self._img_id)
-            except Exception:
-                pass
+            self.canvas.delete(self._img_id)
         self._img_id = self.canvas.create_image(
             self.canvas_w // 2, self.canvas_h // 2, image=self._turn_left[0])
         self._last_turn_key = None
@@ -420,12 +452,12 @@ class PikaPet:
             x = max(4, min(x, sw - self.canvas_w - 4))
             y = max(4, min(y, sh - self.canvas_h - 4))
             self.root.geometry(f"+{int(x)}+{int(y)}")
-        except tk.TclError:
-            pass
+        except tk.TclError as e:
+            log.debug("重定位窗口失败（root 可能已销毁）：%s", e)
 
     def set_scale(self, scale: float, recenter: bool = True):
         """调整桌宠整体缩放并重渲染（像素风 NEAREST 不糊）。"""
-        scale = max(0.4, min(scale, 3.0))
+        scale = _clamp(scale, *pet_state.SCALE_RANGE)
         if abs(scale - self.scale) < 1e-6:
             return
         self.scale = scale
@@ -459,33 +491,43 @@ class PikaPet:
     def _load_real_indices(self, directory: Path, count: int):
         """从 manifest 读补帧下标，返回真实关键帧下标集合。
 
-        解析失败或数量对不上时返回 None（不吸附，行为与旧资产一致）。"""
-        try:
-            data = json.loads((directory / "manifest.json").read_text(
-                encoding="utf-8"))
-            blends = data["blend_indices"]
-            if data.get("count") != count:
-                return None
-            if not isinstance(blends, list) or any(
-                    not isinstance(i, int) for i in blends):
-                return None
-            return sorted(set(range(count)) - set(blends))
-        except Exception:
+        资产没带 manifest 是正常的（旧资产），返回 None 表示不吸附。
+        manifest 存在但内容不对劲则记 WARNING：那是资产生成脚本的问题，
+        静默忽略会让"静止时画面发虚"这种现象查不出原因。"""
+        manifest = directory / "manifest.json"
+        if not manifest.is_file():
             return None
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            blends = data["blend_indices"]
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("转身帧 manifest %s 无法解析，静止不吸附关键帧：%s",
+                        manifest, e)
+            return None
+        if data.get("count") != count:
+            log.warning("转身帧 manifest 记录 count=%s 与实际帧数 %s 不符，"
+                        "静止不吸附关键帧", data.get("count"), count)
+            return None
+        if not isinstance(blends, list) or any(
+                not isinstance(i, int) for i in blends):
+            log.warning("转身帧 manifest 的 blend_indices 不是整数数组，"
+                        "静止不吸附关键帧")
+            return None
+        return sorted(set(range(count)) - set(blends))
 
     # ---- 鼠标跟随 ----
     def _tick_turn(self):
-        try:
+        # 30fps 渲染 tick：失败不能停掉循环（否则皮卡丘从此不再转头），
+        # 也不能每帧记一条日志（30 条/秒会瞬间刷满），用 once 限流
+        with swallow(log, "鼠标跟随渲染", once=True):
             if self._turn_left and self.root.state() == "normal":
                 pos = get_cursor_pos()
                 if pos is not None:
                     self._turn_step(*pos)
-        except Exception:
-            pass
         try:
             self._turn_job = self.root.after(TURN_TICK_MS, self._tick_turn)
-        except Exception:
-            pass  # root 已销毁
+        except tk.TclError:
+            log.debug("root 已销毁，跟随 tick 结束")
 
     def _turn_step(self, mx: float, my: float):
         """按全局光标位置更新一帧朝向（独立出来便于注入坐标做测试）。
@@ -534,7 +576,8 @@ class PikaPet:
             self._press = (e.x_root, e.y_root)
             # 皮卡丘挪动了，气泡/状态菜单跟着走，贴着脑袋
             self.bubble.reposition()
-            self.menu.reposition(self.menu._anchor_x + dx, self.menu._anchor_y + dy)
+            ax, ay = self.menu.anchor
+            self.menu.reposition(ax + dx, ay + dy)
 
     def _on_release(self, e):
         if self._moved:
@@ -592,11 +635,10 @@ class PikaPet:
         self.set_scale(self.scale + step)
 
     def _zoom_bubble(self, step):
-        self.bubble_scale = max(0.5, min(self.bubble_scale + step, 2.5))
+        self.bubble_scale = _clamp(self.bubble_scale + step,
+                                   *pet_state.BUBBLE_SCALE_RANGE)
         # 立即把当前气泡按新尺寸重弹，用户能立刻看到效果
-        if self.bubble.visible:
-            self.bubble.show(self.bubble._last_notif,
-                             kind=self.bubble.kind)
+        self.bubble.redraw()
         self._save_state("bubble_scale")
 
     def _manual_remind(self):
@@ -646,31 +688,34 @@ class PikaPet:
         if self._tab_win is not None:
             try:
                 self._tab_win.destroy()
-            except Exception:
-                pass
+            except tk.TclError as e:
+                log.debug("角标窗口已不存在：%s", e)
         self._tab_win = None
         self.root.deiconify()
         self.root.lift()
 
     # ---- 退出 ----
     def _quit(self):
+        # 退出路径上每一步都要尽力走完（取消定时器 / 停 SSE / 停总线 /
+        # 停提醒 / 存位置），任一步失败不能让后面的收尾被跳过
         for attr in ("_tick_job", "_turn_job"):
             job = getattr(self, attr, None)
             if job is not None:
                 try:
                     self.root.after_cancel(job)
-                except Exception:
-                    pass
+                except tk.TclError as e:
+                    log.debug("取消定时任务 %s 失败：%s", attr, e)
             setattr(self, attr, None)
         if self.sse is not None:
-            self.sse.stop()
+            with swallow(log, "停止 SSE 客户端"):
+                self.sse.stop()
         if self.server is not None:
-            self.server.stop()
-        self._stop_reminder()
-        try:
-            self._save_state("x", "y")   # 退出前存最后位置
-        except Exception:
-            pass
+            with swallow(log, "停止内嵌总线"):
+                self.server.stop()
+        with swallow(log, "停止提醒线程"):
+            self._stop_reminder()
+        with swallow(log, "退出前保存窗口位置"):
+            self._save_state("x", "y")
         self.root.destroy()
 
     def mainloop(self):
@@ -718,14 +763,19 @@ def _make_dpi_aware():
     if _DPI_SET:
         return
     _DPI_SET = True
-    import ctypes as _c
+    if sys.platform != "win32":
+        return
     try:
-        _c.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
-    except Exception:
-        try:
-            _c.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+        return
+    except (AttributeError, OSError) as e:
+        # shcore 是 Win8.1+；老系统退到 user32 的进程级开关
+        log.debug("SetProcessDpiAwareness 不可用，改用 SetProcessDPIAware：%s", e)
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError) as e:
+        # 两个都不行：Tk 会按 96dpi 渲染，字号测量与实际渲染可能错位
+        log.warning("无法设置进程 DPI 感知，气泡排版可能错位：%s", e)
 
 
 

@@ -6,8 +6,11 @@
 import tkinter as tk
 from tkinter import font as tkfont
 
+from .logs import get_logger
 from .pixtokens import (BG, BUBBLE_FONT_FALLBACK, PIX_INK, PIX_INFO,
                         PIX_PAPER, PIX_SHADOW, PIX_TEXT, _cut_rect)
+
+log = get_logger("menu")
 
 
 class PikaMenu:
@@ -43,8 +46,9 @@ class PikaMenu:
         win.attributes("-topmost", True)
         try:
             win.attributes("-transparentcolor", BG)
-        except tk.TclError:
-            pass
+        except tk.TclError as e:
+            # 非 Windows 或不支持：菜单会带品红底，但仍可用
+            log.debug("菜单透明色属性不可用：%s", e)
         h = len(self.items) * self._item_h + self._pad * 2
         # canvas 四周给硬阴影留出偏移量（右下露出 4px 阴影）
         shadow = 4
@@ -90,8 +94,9 @@ class PikaMenu:
         # 原生 tk.Menu 的 tk_popup 自带等价机制，自绘菜单必须手动补。
         try:
             win.grab_set()
-        except tk.TclError:
-            pass
+        except tk.TclError as e:
+            # 抓取失败：点菜单外面不会自动关，得靠 Esc / 失焦。值得知道
+            log.warning("菜单全局抓取失败，点击外部可能不会关闭菜单：%s", e)
 
     def _draw_items(self):
         c = self.canvas
@@ -142,8 +147,8 @@ class PikaMenu:
         if self.win is not None:
             try:
                 self.win.destroy()
-            except Exception:
-                pass
+            except tk.TclError as e:
+                log.debug("菜单窗口已不存在：%s", e)
         self.win = None
         self.canvas = None
 
@@ -161,5 +166,11 @@ class PikaMenu:
             x = min(x_root, sw - bw - 4)
             y = min(y_root, sh - bh - 4)
             self.win.geometry(f"+{int(max(4, x))}+{int(max(4, y))}")
-        except Exception:
-            pass
+        except tk.TclError as e:
+            # 拖动过程中菜单可能刚被关掉，位置就不用更新了
+            log.debug("菜单重定位失败（窗口可能已关闭）：%s", e)
+
+    @property
+    def anchor(self):
+        """菜单当前锚点屏幕坐标 (x, y)。拖动桌宠时据此平移菜单。"""
+        return self._anchor_x, self._anchor_y

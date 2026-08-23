@@ -17,7 +17,10 @@ import random
 import time
 from dataclasses import dataclass
 
+from .logs import get_logger
 from .reminder_phrases import pick_by_config
+
+log = get_logger("reminder")
 
 # 用户空闲超过该分钟数，interval 提醒顺延（人不在，不打扰）
 IDLE_DEFER_MIN = 30.0
@@ -159,10 +162,16 @@ class ReminderScheduler:
 
     # ---- 内部 ----
     def _try_send(self, now: float, body: str, sent_now: list) -> bool:
+        """发一条提醒。失败返回 False 交给上层退避重试，并记 WARNING。
+
+        Sink 的实现可能是 HTTP 投递（总线不可达）也可能是队列（队列满），
+        异常类型不确定，所以这里捕获 Exception；但绝不静默——发不出去的
+        提醒就是没提醒，用户需要能查到原因。"""
         try:
             self.sink.send(self.config.title, body, source="reminder")
-        except Exception:
+        except Exception as e:
             self.last_send_ok = False
+            log.warning("提醒发送失败（将退避重试）：%s", e, exc_info=True)
             return False
         self.last_send_ok = True
         self.sent.append((now, self.config.title, body))

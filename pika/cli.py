@@ -12,6 +12,7 @@
 import argparse
 import json
 import sys
+import urllib.error
 
 from . import bus
 from .protocol import Notification, ProtocolError
@@ -28,7 +29,11 @@ def send(args) -> int:
         return 1
     try:
         resp = bus.send_notification(notif, port=args.port)
-    except Exception as e:
+    except urllib.error.HTTPError as e:
+        # 服务在但拒绝（如 token 不符）：把状态码带出来，比"发送失败"有用
+        print(f"总线拒绝了这条消息（HTTP {e.code} {e.reason}）", file=sys.stderr)
+        return 1
+    except (OSError, bus.PortFileError, bus.TokenError) as e:
         print(f"发送失败：{e}", file=sys.stderr)
         return 1
     print(json.dumps(resp, ensure_ascii=False))
@@ -38,7 +43,10 @@ def send(args) -> int:
 def history(args) -> int:
     try:
         items = bus.fetch_history(n=args.n, port=args.port)
-    except Exception as e:
+    except urllib.error.HTTPError as e:
+        print(f"获取历史失败（HTTP {e.code} {e.reason}）", file=sys.stderr)
+        return 1
+    except (OSError, bus.PortFileError, ValueError) as e:
         print(f"获取历史失败：{e}", file=sys.stderr)
         return 1
     for it in items:
@@ -52,7 +60,10 @@ def history(args) -> int:
 def health(args) -> int:
     try:
         info = bus.fetch_health(port=args.port)
-    except Exception as e:
+    except urllib.error.HTTPError as e:
+        print(f"总线响应异常（HTTP {e.code} {e.reason}）", file=sys.stderr)
+        return 1
+    except (OSError, bus.PortFileError, ValueError) as e:
         print(f"总线未响应：{e}", file=sys.stderr)
         return 1
     print(json.dumps(info, ensure_ascii=False, indent=2))

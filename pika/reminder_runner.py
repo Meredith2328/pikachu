@@ -18,8 +18,12 @@ import time
 from dataclasses import asdict
 
 from . import bus
+from .logs import configure as configure_logging
+from .logs import get_logger
 from .protocol import Notification
 from .reminder import ReminderConfig, ReminderScheduler
+
+log = get_logger("reminder_runner")
 
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "configs", "reminder.json")
@@ -127,8 +131,10 @@ class FakeActivitySource:
                 with open(self.path, encoding="utf-8") as f:
                     self._cache = json.load(f)
                 self._mtime = mtime
-        except OSError:
-            pass
+        except (OSError, ValueError) as e:
+            # 读不到就沿用上次缓存（首次失败则是空字典 → idle 0），
+            # 但要留痕：假数据源路径写错时否则完全看不出问题
+            log.warning("假数据源 %s 读取失败，沿用上次值：%s", self.path, e)
         return self._cache or {}
 
     def idle_minutes(self, now: float) -> float:
@@ -149,8 +155,11 @@ def run(once: bool = False, config: str = None, fake: str = None,
         try:
             scheduler.step()
         except Exception as e:
-            # 数据源/配置异常：退避重试，不让常驻进程整体退出
+            # 数据源/配置异常：退避重试，不让常驻进程整体退出。
+            # 类型不确定（假数据源读文件、真数据源调 Win32），但一定留痕
             fail_streak += 1
+            log.warning("提醒调度异常（第 %d 次，将退避重试）：%s",
+                        fail_streak, e, exc_info=True)
             if once and fail_streak >= max_retries:
                 print(f"提醒器异常：{e}", file=sys.stderr)
                 return 1
@@ -190,6 +199,7 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
     parser.add_argument("--interval", type=float, default=1.0)
     args = parser.parse_args(argv)
+    configure_logging()
     try:
         return run(once=args.once, config=args.config, fake=args.fake,
                    port=args.port, interval=args.interval)

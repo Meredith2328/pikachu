@@ -22,8 +22,13 @@ enter_deg 才改变期望朝向——滞回带防止鼠标在头顶附近抖动�
 """
 import ctypes
 import math
+import sys
 import time
 from pathlib import Path
+
+from .logs import get_logger
+
+log = get_logger("turn")
 
 
 def _clamp01(v: float) -> float:
@@ -167,15 +172,22 @@ def turn_frame_paths(directory: Path):
     return left, right
 
 
-def get_cursor_pos():
-    """全局鼠标坐标（Windows）。失败或非 Windows 返回 None。"""
-    try:
-        class POINT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
-        pt = POINT()
+
+def get_cursor_pos():
+    """全局鼠标坐标（Windows）。非 Windows 或调用失败返回 None。
+
+    调用方是 30fps 的渲染 tick，所以失败按 DEBUG 记（once 语义由调用方
+    的 swallow 负责），不能每帧打一条 WARNING。"""
+    if sys.platform != "win32":
+        return None
+    try:
+        pt = _POINT()
         if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
             return (pt.x, pt.y)
-    except Exception:
-        pass
+        log.debug("GetCursorPos 返回失败")
+    except (AttributeError, OSError) as e:
+        log.debug("GetCursorPos 调用异常：%s", e)
     return None
