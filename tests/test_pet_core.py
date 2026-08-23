@@ -127,9 +127,11 @@ class TestPetController(unittest.TestCase):
         self.c.handle(self.n(title="3", source="a"))
         self.assertEqual(len(self.c.recent()), 3)
         self.assertEqual(self.c.source_stats(), {"a": 2, "b": 1})
-        text = self.c.status_text()
-        self.assertIn("3 条通知", text)
-        self.assertIn("a 2", text)
+        # 结构化模型是状态气泡的正式接口；纯文本版留给无 GUI 的调试路径
+        m = self.c.status_model()
+        self.assertEqual(m.total, 3)
+        self.assertEqual(m.sources, {"a": 2, "b": 1})
+        self.assertIn("3 条通知", self.c.status_text())
 
     def test_history_limit(self):
         c = PetController(clock=lambda: self.clock.t, history_limit=3)

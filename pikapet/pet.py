@@ -55,6 +55,27 @@ def _clamp(v, lo, hi):
     return max(lo, min(v, hi))
 
 
+# 气泡缩放 → 状态气泡的信息量。缩放调的是"显示多少内容"，不只是字号：
+# 放大了却只有三行大字很浪费，缩小了塞五条又挤。阈值按气泡缩放档位
+# （菜单每次 ±0.25，范围 0.5~2.5）取整，落点稳定、不会在边界抖动。
+STATUS_BUDGET = (
+    # (缩放下限, 最多几条, 是否带一行摘要)
+    (1.6, 6, True),
+    (1.3, 5, True),
+    (1.0, 4, True),
+    (0.8, 3, False),
+    (0.0, 2, False),
+)
+
+
+def status_budget(bubble_scale: float):
+    """按气泡缩放决定状态气泡显示几条、是否带摘要。返回 (条目数, 带摘要)。"""
+    for lo, items, preview in STATUS_BUDGET:
+        if bubble_scale >= lo:
+            return items, preview
+    return STATUS_BUDGET[-1][1], STATUS_BUDGET[-1][2]
+
+
 def _flatten_transparency(path):
     """把 RGBA 贴图压平成"不透明 + 透明品红"两色 alpha。
 
@@ -608,9 +629,26 @@ class PikaPet:
         if self._status_visible:
             return
         self._status_visible = True
-        notif = Notification(title="皮卡丘", body=self._controller.status_text(),
-                             level="info", source="pika", ttl=0)
-        self.bubble.show(notif, kind="status")
+        self._draw_status_bubble()
+
+    def refresh_status_bubble(self):
+        """按当前缩放重新取内容并重画状态气泡（缩放联动内容量）。"""
+        if self._status_visible:
+            self._draw_status_bubble()
+
+    def _draw_status_bubble(self):
+        """把控制器的状态模型交给气泡渲染。
+
+        条目数与"是否带摘要"由气泡缩放决定：缩放调的是信息量，不只是
+        字号——放大到 1.3 以上给 5 条并带一行摘要，缩到 0.8 以下只留
+        2 条标题。上限来自 status_model 的去重历史，不够就少显示几条。
+        """
+        max_items, preview = status_budget(self.bubble_scale)
+        model = self._controller.status_model(max_items=max_items,
+                                              preview=preview)
+        notif = Notification(title="皮卡丘", body="", level="info",
+                             source="pika", ttl=0)
+        self.bubble.show(notif, kind="status", status=model)
 
     def _status_close(self):
         self._status_visible = False

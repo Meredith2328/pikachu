@@ -17,9 +17,9 @@ from tkinter import font as tkfont
 from .logs import get_logger, swallow
 from .protocol import Notification
 from .pixtokens import (BG, BUBBLE_FONT, BUBBLE_FONT_FALLBACK, LEVEL_STYLE,
-                        MAX_TEXT_W, PIX_ACCENT, PIX_BORDER_W, PIX_INK,
-                        PIX_MUTE, PIX_PANEL, PIX_PAPER, PIX_SHADOW,
-                        PIX_SHADOW_GAP, PIX_TEXT, _cut_rect, _wrap)
+                        MAX_TEXT_W, PIX_ACCENT, PIX_BORDER_W, PIX_INFO,
+                        PIX_INK, PIX_MUTE, PIX_PANEL, PIX_PAPER, PIX_SHADOW,
+                        PIX_SHADOW_GAP, PIX_TEXT, PIX_WARN, _cut_rect, _wrap)
 from . import mdflush
 
 log = get_logger("bubble")
@@ -30,6 +30,29 @@ LINK_DEDUP_SEC = 0.8
 _WRAP_TOKEN = re.compile(r"[^\s]+[\s]*|[\s]+")
 # 锚点窗口尺寸读不到时的兜底（与桌宠默认画布同尺寸）
 DEFAULT_ANCHOR_SIZE = 180
+
+
+def _ellipsize(text, font, maxw):
+    """按像素宽把单行截到 maxw，超出补省略号。
+
+    状态条目刻意"截断而不折行"：每条固定占一行，眼睛才能沿着左边缘
+    一路往下数出有几项；折行会让条目边界消失。
+    """
+    text = str(text or "")
+    if maxw <= 0 or font.measure(text) <= maxw:
+        return text
+    ell = "…"
+    budget = maxw - font.measure(ell)
+    if budget <= 0:
+        return ell
+    lo, hi = 0, len(text)
+    while lo < hi:                      # 二分找放得下的最长前缀
+        mid = (lo + hi + 1) // 2
+        if font.measure(text[:mid]) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + ell
 
 
 class Cell(NamedTuple):
@@ -69,15 +92,24 @@ class Bubble:
         self.frame = None  # 兼容旧字段：现在指向内容画布
         self.kind = None
         self._last_notif = None
+        self._last_status = None   # 状态气泡的结构化内容（重画时复用）
         self._cur_scale = 1.0
         self._links = []   # [(x1,y1,x2,y2,url)] 供点击命中
         self._last_link_url = None   # 链接点击去重：上次打开的 url 与时刻
         self._last_link_ts = 0.0
 
-    def show(self, notif: Notification, kind: str = "notice"):
+    def show(self, notif: Notification, kind: str = "notice",
+             status=None):
+        """弹气泡。
+
+        kind="status" 且给了 status（PetController.status_model() 的结果）时，
+        正文走结构化排版而不是 Markdown——状态内容是"若干条目 + 统计"，
+        用 \\n 拼成一段文字再走 Markdown 会被并成一行，列表全挤在一起。
+        """
         self.close()
         self.kind = kind
         self._last_notif = notif
+        self._last_status = status
         win = tk.Toplevel(self.parent)
         win.overrideredirect(True)
         win.attributes("-topmost", True)
@@ -102,14 +134,20 @@ class Bubble:
         f_title = self._font(size=fs_title, weight="bold")
         f_body = self._font(size=fs_body)
         f_meta = self._font(size=fs_meta)
+        # 折行宽度随缩放走：固定 300px 的话，气泡放大只是把字变大、每行
+        # 反而塞不下几个字，标题会被截得七零八落
+        maxw = max(120, round(MAX_TEXT_W * s))
         # 折行基准随缩放重算（字体变了，measure 也随之变化）
-        title_lines = _wrap(notif.title, f_title, MAX_TEXT_W)
-        # 正文：Markdown → 富文本行模型，逐行绘制（支持粗体/斜体/代码/
-        # 标题/列表/引用/分隔线/链接）；纯文本也走同一条路，空白自动折叠。
+        title_lines = _wrap(notif.title, f_title, maxw)
         self._cur_scale = s
-        body_rows = self._layout_body(notif.body, f_body, MAX_TEXT_W,
-                                      accent)
-        meta_lines = _wrap(meta, f_meta, MAX_TEXT_W)
+        if status is not None:
+            body_rows = self._layout_status(status, f_body, maxw)
+        else:
+            # 正文：Markdown → 富文本行模型，逐行绘制（支持粗体/斜体/代码/
+            # 标题/列表/引用/分隔线/链接）；纯文本也走同一条路，空白自动折叠。
+            body_rows = self._layout_body(notif.body, f_body, maxw,
+                                          accent)
+        meta_lines = _wrap(meta, f_meta, maxw)
 
         pad_x, pad_t, pad_b = round(18 * s), round(13 * s), round(11 * s)
         accent_w, badge_r = round(4 * s), round(11 * s)
@@ -391,6 +429,98 @@ class Bubble:
             return {"width": 0, "height": 0, "lines": []}
         return {"width": width, "height": height, "lines": lines}
 
+    def _layout_status(self, model, f_body, maxw):
+        """状态内容 → 行模型。与 _layout_body 输出同一种结构，共用绘制代码。
+
+        排版目标是"一眼看清有几项、哪几项、每项讲什么"，所以：
+        - 顶部一行汇总（总条数 + 来源数 + 静音标记），数字用墨色加粗，
+          其余灰字——扫一眼就知道规模；
+        - 每个条目占两行且左侧对齐：第一行是 `●` 级别色圆点 + 来源徽标 +
+          标题，第二行缩进一格放摘要；条目之间留一行空隙，不再靠 `·`
+          分隔符把几条挤在一行里；
+        - 颜色只承载语义：级别色点 + 来源名用强调蓝、标题墨色、摘要灰、
+          数字加粗。不给正文整体上色，避免花哨。
+        """
+        s = getattr(self, "_cur_scale", 1.0)
+        f_size = f_body.cget("size")
+        f_bold = self._font(size=f_size, weight="bold")
+        f_small = self._font(size=max(1, f_size - 1))
+        lsp = f_body.metrics("linespace")
+        lsp_small = f_small.metrics("linespace")
+        gap = max(2, round(5 * s))     # 条目之间的空隙
+        indent = " " * 2               # 摘要相对标题缩进
+
+        lines = []
+        width = 0
+        height = 0
+
+        def emit(cells, hgt, above=0):
+            nonlocal width, height
+            w = sum(c.font.measure(c.text) for c in cells)
+            width = max(width, min(w, maxw))
+            height += above + hgt
+            lines.append({"cells": cells, "height": hgt, "above": above})
+
+        # ---- 汇总行 ----
+        # "N 条通知" 与 "M 个来源" 分两段，放不进一行就换行摆第二段：
+        # 硬塞一行会顶破卡片右边缘（card_w 按 min(w, maxw) 算，超出部分
+        # 直接画到卡片外面去）
+        seg_count = [
+            Cell("⚡ ", frozenset(), f_body, PIX_INFO),
+            Cell(str(model.total), frozenset({"bold"}), f_bold, PIX_INK),
+            Cell(" 条通知", frozenset(), f_body, PIX_TEXT),
+        ]
+        seg_src = []
+        if model.sources:
+            seg_src = [
+                Cell(str(len(model.sources)), frozenset({"bold"}), f_bold,
+                     PIX_INK),
+                Cell(" 个来源", frozenset(), f_body, PIX_TEXT),
+            ]
+        sep = [Cell("  ·  ", frozenset(), f_body, PIX_MUTE)]
+        one_line = seg_count + sep + seg_src
+        if not seg_src:
+            emit(seg_count, lsp)
+        elif sum(c.font.measure(c.text) for c in one_line) <= maxw:
+            emit(one_line, lsp)
+        else:
+            emit(seg_count, lsp)
+            # 第二段缩进对齐到 ⚡ 之后（空格不显色，用什么前景都一样）
+            emit([Cell("   ", frozenset(), f_body, PIX_TEXT)] + seg_src, lsp)
+        if model.muted:
+            emit([Cell("🔇 静音中，只记录不弹泡", frozenset(), f_small,
+                       PIX_WARN)], lsp_small, above=max(1, round(2 * s)))
+
+        # ---- 条目 ----
+        for i, item in enumerate(model.items):
+            dot = LEVEL_STYLE.get(item.level, LEVEL_STYLE["info"])[0]
+            head = [
+                Cell("● ", frozenset(), f_small, dot),
+                Cell(item.source, frozenset(), f_small, PIX_ACCENT),
+                Cell("  ", frozenset(), f_small, PIX_MUTE),
+            ]
+            used = sum(c.font.measure(c.text) for c in head)
+            head.append(Cell(_ellipsize(item.title, f_bold, maxw - used),
+                             frozenset({"bold"}), f_bold, PIX_INK))
+            emit(head, lsp, above=gap if i else max(2, round(4 * s)))
+            if item.preview:
+                pad = f_small.measure(indent)
+                emit([Cell(indent + _ellipsize(item.preview, f_small,
+                                               maxw - pad),
+                           frozenset(), f_small, PIX_TEXT)],
+                     lsp_small)
+
+        # ---- 省略提示 ----
+        if model.hidden:
+            emit([Cell(f"…另有 {model.hidden} 条更早的", frozenset(),
+                       f_small, PIX_MUTE)],
+                 lsp_small, above=gap)
+        if not model.items and not model.total:
+            emit([Cell("还没收到通知", frozenset(), f_small, PIX_MUTE)],
+                 lsp_small, above=gap)
+
+        return {"width": width, "height": height, "lines": lines}
+
     def _open_link(self, url):
         """点击链接：用系统默认浏览器打开。
 
@@ -477,10 +607,14 @@ class Bubble:
     def redraw(self):
         """按当前缩放重画当前气泡（气泡字号变了要立刻看到效果）。
 
-        气泡不可见时什么都不做。调用方不必自己去拿"上一条通知"。"""
+        气泡不可见时什么都不做。调用方不必自己去拿"上一条通知"。
+        状态气泡会重新问一次内容：缩放变了，该显示的条目数也跟着变。"""
         if self.win is None or self._last_notif is None:
             return
-        self.show(self._last_notif, kind=self.kind)
+        if self.kind == "status" and self.pet is not None:
+            self.pet.refresh_status_bubble()
+            return
+        self.show(self._last_notif, kind=self.kind, status=self._last_status)
 
     def close(self):
         if self.win is not None:

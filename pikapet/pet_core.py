@@ -8,12 +8,45 @@
 import threading
 import time
 from collections import deque
+from typing import NamedTuple
 
 from .protocol import Notification
 
 INFINITE = float("inf")
 # 超过该时长的历史消息视为"陈旧"：SSE 重连/重启回放时不再弹泡（只累计统计）
 STALE_WINDOW_SEC = 60.0
+
+
+class StatusItem(NamedTuple):
+    """状态气泡里的一条：来源 + 标题 + 一行摘要 + 级别（决定颜色）。"""
+
+    source: str
+    title: str
+    preview: str
+    level: str
+    at: float
+
+
+class StatusModel(NamedTuple):
+    """状态气泡的全部内容。
+
+    total 是收到的总条数，sources 是各来源计数，items 是去重后最近的几条，
+    hidden 是"去重后还有多少条没显示"（气泡缩小时这个数会变大）。
+    """
+
+    total: int
+    sources: dict
+    muted: bool
+    items: list
+    hidden: int
+
+
+def _one_line(text: str, limit: int) -> str:
+    """压平成一行并截断：摘要不能自己换行，否则条目对不齐。"""
+    s = " ".join(str(text or "").split())
+    if len(s) <= limit:
+        return s
+    return s[:limit].rstrip() + "…"
 
 
 class PetController:
@@ -109,35 +142,61 @@ class PetController:
                 stats[item.source] = stats.get(item.source, 0) + 1
             return stats
 
-    def status_text(self) -> str:
-        """悬浮主宠时的状态气泡文案（也用于右键菜单）。"""
+    def status_model(self, max_items: int = 3, preview: bool = True,
+                     preview_len: int = 42) -> "StatusModel":
+        """状态气泡的结构化内容。
+
+        返回结构而不是拼好的一段文字：气泡要按级别给每条上色、把来源、标题、
+        摘要摆到不同位置，这些拿一坨 \\n 拼起来的字符串是做不到的（而且
+        正文走 Markdown 渲染时，连续几行会被并成一段，列表全挤成一行）。
+
+        max_items / preview 由气泡缩放决定：气泡放大时多显示几条并带摘要，
+        缩小时只留标题——缩放调的是"信息量"，不只是字号。
+        """
         with self._lock:
-            stats = {}
-            for _, item in self._history:
-                stats[item.source] = stats.get(item.source, 0) + 1
-            total = len(self._history)
-            parts = [f"⚡ 已接收 {total} 条通知"]
-            if self.muted:
-                parts.append("🔇 静音中（不弹气泡，仍记录）")
-            if stats:
-                src = " · ".join(f"{k} {v}" for k, v in sorted(stats.items()))
-                parts.append(f"来源：{src}")
-            recent = list(self._history)[-20:]
-            # 展示层按 (source, title, body) 去重，避免重复消息刷屏
-            seen = set()
-            unique = []
-            for _, item in reversed(recent):
-                key = (item.source, item.title, item.body)
-                if key in seen:
-                    continue
-                seen.add(key)
-                unique.append(item)
-                if len(unique) >= 3:
-                    break
-            if unique:
-                parts.append("最近\n" + "\n".join(
-                    f"· {it.source} {it.title}" for it in unique))
-            return "\n\n".join(parts)
+            history = list(self._history)
+            muted = self.muted
+        stats = {}
+        for _, item in history:
+            stats[item.source] = stats.get(item.source, 0) + 1
+        # 展示层按 (source, title, body) 去重，避免重复消息刷屏；
+        # 从新到旧取，保留最近的那一条。
+        # 先整体去重再切片：hidden 要算"去重后还剩多少条没显示"，
+        # 边遍历边 break 的话根本没数完后面还有几条。
+        seen = set()
+        unique = []
+        for at, item in reversed(history):
+            key = (item.source, item.title, item.body)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append((at, item))
+        limit = max(0, max_items)
+        items = [
+            StatusItem(source=item.source,
+                       title=item.title,
+                       preview=(_one_line(item.body, preview_len)
+                                if preview else ""),
+                       level=item.level,
+                       at=at)
+            for at, item in unique[:limit]
+        ]
+        return StatusModel(total=len(history), sources=stats, muted=muted,
+                           items=items, hidden=len(unique) - len(items))
+
+    def status_text(self) -> str:
+        """状态内容的纯文本版（无 GUI 时的日志/调试用）。"""
+        m = self.status_model()
+        lines = [f"已接收 {m.total} 条通知 · {len(m.sources)} 个来源"]
+        if m.muted:
+            lines.append("静音中（只记录，不弹气泡）")
+        for it in m.items:
+            lines.append(f"[{it.source}] {it.title}")
+            if it.preview:
+                lines.append(f"    {it.preview}")
+        if m.hidden:
+            lines.append(f"另有 {m.hidden} 条更早的")
+        return "\n".join(lines)
 
     # ---- 内部 ----
     def _is_duplicate_locked(self, n: Notification, arrived: float) -> bool:
