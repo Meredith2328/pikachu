@@ -346,5 +346,60 @@ class TestConfigureMain(HarnessTestCase):
                          ["pika"])
 
 
+class TestModuleEntryPoint(unittest.TestCase):
+    """钩子配置里写的是 `python -m pikapet.harness_notifications event ...`。
+
+    模块少了 __main__ 入口时，执行它只把函数定义一遍就退出——返回 0 却
+    什么都没做，表现是"钩子跑了、日志干净、但气泡不来"。这个坑真踩过，
+    必须钉住：模块入口要能直接吃 event 子命令。
+    """
+
+    def test_module_runs_event_subcommand(self):
+        import subprocess
+        with isolated_home():
+            env = dict(os.environ)
+            proc = subprocess.run(
+                [sys.executable, "-m", "pikapet.harness_notifications",
+                 "event", "--harness", "codex", "--event", "stop"],
+                input=json.dumps({"last_assistant_message": "x"}),
+                capture_output=True, text=True, env=env, timeout=60,
+                cwd=os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__))))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # 不能是 argparse 的"invalid choice"——那说明子命令没挂对
+        self.assertNotIn("invalid choice", proc.stderr)
+
+    def test_module_rejects_unknown_subcommand(self):
+        import subprocess
+        proc = subprocess.run(
+            [sys.executable, "-m", "pikapet.harness_notifications", "nope"],
+            capture_output=True, text=True, timeout=60,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_main_dispatches_event(self):
+        with isolated_home():
+            with mock.patch.object(hn, "dispatch") as dispatch:
+                orig = sys.stdin
+                sys.stdin = io.StringIO(json.dumps({"response": "y"}))
+                try:
+                    rc = hn.main(["event", "--harness", "zcode",
+                                  "--event", "approval"])
+                finally:
+                    sys.stdin = orig
+        self.assertEqual(rc, 0)
+        dispatch.assert_called_once()
+        self.assertEqual(dispatch.call_args[0][:2], ("zcode", "approval"))
+
+    def test_main_configure_show(self):
+        import contextlib
+        with isolated_home():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = hn.main(["configure", "codex", "stop", "--show"])
+        self.assertEqual(rc, 0)
+        self.assertIn("harnesses", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

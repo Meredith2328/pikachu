@@ -303,16 +303,19 @@ def configure_main(args) -> int:
     return 0
 
 
-def register(sub):
-    p = sub.add_parser("harness", help="管理 Codex/ZCode 的统一通知路由")
-    modes = p.add_subparsers(dest="harness_mode", required=True)
+def add_modes(sub):
+    """把 event / configure 两个子命令挂到给定 subparsers 上。
 
-    e = modes.add_parser("event", help="处理一条生命周期事件（钩子调用）")
+    顶层 `pikachu harness ...` 与模块入口
+    `python -m pikapet.harness_notifications ...` 共用这一处定义，
+    两边的参数不会各写一遍而走偏。
+    """
+    e = sub.add_parser("event", help="处理一条生命周期事件（钩子调用）")
     e.add_argument("--harness", choices=HARNESSES, required=True)
     e.add_argument("--event", choices=EVENTS, required=True)
     e.set_defaults(func=event_main)
 
-    c = modes.add_parser("configure", help="改路由规则或查看当前配置")
+    c = sub.add_parser("configure", help="改路由规则或查看当前配置")
     c.add_argument("harness", choices=HARNESSES)
     c.add_argument("event", choices=EVENTS)
     c.add_argument("--channels", help="逗号分隔，如 pika,feishu")
@@ -320,4 +323,32 @@ def register(sub):
     c.add_argument("--feishu-webhook", help="设置飞书 webhook 并启用该渠道")
     c.add_argument("--show", action="store_true", help="打印当前完整配置")
     c.set_defaults(func=configure_main)
+    return sub
+
+
+def register(sub):
+    """注册 `pikachu harness event|configure` 子命令。"""
+    p = sub.add_parser("harness", help="管理 Codex/ZCode 的统一通知路由")
+    add_modes(p.add_subparsers(dest="harness_mode", required=True))
     return p
+
+
+def main(argv=None) -> int:
+    """`python -m pikapet.harness_notifications event ...` 的入口。
+
+    钩子配置里写的就是这个模块（不是顶层 pikachu 命令），所以必须自带
+    入口——少了它模块被执行时只把函数定义一遍就退出，返回 0 却什么都没做，
+    表现为"钩子跑了、日志干净、但气泡不来"。这里直接挂 event/configure，
+    不再套一层 harness 前缀（钩子命令行里没有那个词）。
+    """
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="pikapet.harness_notifications",
+        description="Codex / ZCode 生命周期通知路由")
+    add_modes(parser.add_subparsers(dest="mode", required=True))
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
