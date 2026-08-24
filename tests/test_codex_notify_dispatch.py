@@ -66,6 +66,22 @@ class TestNotifyDispatch(unittest.TestCase):
         # 事件 JSON 必须原样透传给下游
         self.assertIn("agent-turn-complete", marker.read_text(encoding="utf-8"))
 
+    def test_downstream_spawned_without_console_window(self):
+        """转发下游时必须带 CREATE_NO_WINDOW。
+
+        computer-use 是控制台程序，从 pythonw（无控制台）启动它时 Windows
+        会新开一个控制台窗口；Windows Terminal 的 closeOnExit 默认 graceful，
+        子进程非零退出就把标签页留在屏幕上——每来一条 notify 就攒一个空白
+        终端。实测每轮都多一个，必须钉住。
+        """
+        if sys.platform != "win32":
+            self.skipTest("仅 Windows 有这个问题")
+        import subprocess as sp
+        from tools import codex_notify_dispatch as dispatch
+        flags = dispatch._no_window_kwargs().get("creationflags")
+        self.assertEqual(flags, sp.CREATE_NO_WINDOW,
+                         "转发下游必须 CREATE_NO_WINDOW，否则会攒空白终端窗口")
+
     def test_downstream_missing_still_exit_zero(self):
         """下游路径不存在也不能让 Codex 报错。"""
         r = self._run({

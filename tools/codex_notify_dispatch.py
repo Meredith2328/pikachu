@@ -44,6 +44,22 @@ DOWNSTREAM_ARGS_ENV = "PIKACHU_CODEX_NOTIFY_DOWNSTREAM_ARGS"
 TIMEOUT_SEC = 20
 
 
+def _no_window_kwargs():
+    """Windows 下让子进程不弹控制台窗口的 subprocess 参数。
+
+    computer-use 是个控制台程序（subsystem:console）。从 pythonw 这种无
+    控制台的父进程启动它时，Windows 会**新开一个控制台窗口**；而 Windows
+    Terminal 的 closeOnExit 默认是 graceful，子进程非零退出就把那个标签页
+    留在屏幕上。于是每收到一次 notify 就攒下一个空白终端标签。
+
+    CREATE_NO_WINDOW 让它在后台无窗口运行——它本来也不需要被看见。
+    """
+    if sys.platform != "win32":
+        return {}
+    # 0x08000000 = CREATE_NO_WINDOW
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
+
+
 def downstream_command():
     """原 notify 程序的路径；返回 None 表示没有下游要转发。"""
     override = os.environ.get(DOWNSTREAM_ENV)
@@ -80,7 +96,8 @@ def forward_downstream(argv):
              if a]
     with swallow(log, f"转发 notify 事件给 {exe.name}"):
         subprocess.run([str(exe), *extra, *argv], timeout=TIMEOUT_SEC,
-                       capture_output=True, shell=False)
+                       capture_output=True, shell=False,
+                       **_no_window_kwargs())
 
 
 def notify_pet(argv):
