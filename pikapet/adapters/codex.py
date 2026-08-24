@@ -184,7 +184,8 @@ def run_event(args) -> int:
                      level=level, source=args.source, ttl=args.ttl)
     try:
         resp = bus.send_notification(n, port=args.port)
-        print(json.dumps(resp, ensure_ascii=False))
+        if not args.quiet:
+            print(json.dumps(resp, ensure_ascii=False))
     except Exception as e:
         # 通知钩子绝不能阻塞 Codex：失败只记 stderr，返回 0
         print(f"总线不可达：{e}", file=sys.stderr)
@@ -199,6 +200,8 @@ def add_subcommands(sub):
     p_ev.add_argument("--source", default="codex")
     p_ev.add_argument("--ttl", type=float, default=15.0)
     p_ev.add_argument("--port", type=int, default=bus.DEFAULT_PORT)
+    p_ev.add_argument("--quiet", action="store_true",
+                      help="成功时不向 stdout 输出（供 Codex Stop 钩子使用）")
     p_ev.set_defaults(func=run_event)
 
     p_rp = sub.add_parser("report", help="自动化阶段报告（与 zcode 适配器同构）")
@@ -215,8 +218,11 @@ def add_subcommands(sub):
 
 def register(sub):
     """注册 `pikachu codex event|report` 子命令。"""
-    p = sub.add_parser("codex", help="Codex 通知适配器（event/report）")
-    add_subcommands(p.add_subparsers(dest="mode", required=True))
+    p = sub.add_parser("codex", help="Codex 通知适配器与集成配置")
+    modes = p.add_subparsers(dest="mode", required=True)
+    add_subcommands(modes)
+    from .. import codex_integration
+    codex_integration.register(modes)
     return p
 
 

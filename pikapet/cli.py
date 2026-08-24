@@ -227,9 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # 适配器各自注册自己的子命令（参数定义只在适配器里写一次）
     from .adapters import codex, dsh, zcode
+    from . import harness_notifications
     zcode.register(sub)
     codex.register(sub)
     dsh.register(sub)
+    harness_notifications.register(sub)
     return parser
 
 

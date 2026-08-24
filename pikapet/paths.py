@@ -27,6 +27,7 @@ PORT_NAME = "port"
 PET_STATE_NAME = "pet_state.json"
 LOG_NAME = "pikachu.log"
 HOOK_LOG_NAME = "hook_stdin.log"
+HARNESS_CONFIG_NAME = "harness_notifications.json"
 
 
 class RuntimeDirError(RuntimeError):
@@ -98,6 +99,10 @@ def log_file(create_dir: bool = False) -> Path:
 
 def hook_log_file(create_dir: bool = False) -> Path:
     return runtime_path(HOOK_LOG_NAME, create_dir)
+
+
+def harness_config_file(create_dir: bool = False) -> Path:
+    return runtime_path(HARNESS_CONFIG_NAME, create_dir)
 
 
 def write_text_atomic(path: Path, text: str) -> None:

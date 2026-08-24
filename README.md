@@ -63,6 +63,7 @@ token、端口协商文件、桌宠状态、日志都在 `%LOCALAPPDATA%\pikachu
 | `token` | 投递鉴权密钥，首次启动生成 |
 | `port` | 端口回退时的实际端口，供发送方协商 |
 | `pet_state.json` | 桌宠缩放 / 气泡缩放 / 静音 / 窗口位置 |
+| `harness_notifications.json` | Codex / ZCode 事件的渠道路由规则 |
 | `pikachu.log` | 滚动日志（`PIKACHU_LOG_LEVEL` 调级别，默认 WARNING） |
 | `hook_stdin.log` | ZCode 钩子收到的原始 stdin，供排查 |
 
@@ -219,20 +220,64 @@ pikachu zcode "watch-inbox" --stage error --detail "权限不足"
 `error`(失败 · error) / `run`(进行中 · info)。
 创建自动化时把第一行放进任务开头、第二/三行按结果放在结尾即可。
 
-## Codex 集成
+## 统一通知路由（Codex / ZCode）
 
-Codex 每轮回复完成会发出事件，两套接入方式的事件名不一样，适配器都认：
+Codex 和 ZCode 的生命周期事件走同一条路由：一条事件进来，按配置扇出到
+若干渠道。
 
-- **notify**：事件类型是 `agent-turn-complete`，配在 `~/.codex/config.toml`；
-- **hooks**（Codex 0.147+）：事件名走 `hook_event_name`，取 `Stop` /
-  `SubagentStop`。负载形状不同（没有 `type`、没有 `input_messages`），
-  所以标题退到工作目录名，正文为空时再退到 `transcript_path` 尾部的
-  最后一条回复。
+```text
+Codex / ZCode  Stop 钩子     ─┐
+Codex / ZCode  approval 钩子 ─┴─► pikapet.harness_notifications
+                                   ├─► 桌宠气泡（pika）
+                                   ├─► 飞书群机器人（feishu）
+                                   └─► 邮件（email，尚未实现）
+```
 
-### notify 只有一个槽位，用分发器共享
+一条命令装好，两边都是幂等的（重复跑不会叠加钩子，其他钩子/插件/MCP
+设置一个不动）：
 
-`notify` 是单程序槽。本机那个槽已经被 computer-use 占了，直接改成皮卡丘会
-把 computer-use 弄坏，所以走 `tools/codex_notify_dispatch.py` 分发：
+```bash
+pikachu codex setup          # 写 ~/.codex/hooks.json + 打开 features.hooks
+pikachu zcode setup          # 写 ~/.zcode/cli/config.json 的 Stop 钩子
+pikachu codex setup --check  # 只检查不写，返回码非 0 表示没装好
+pikachu zcode setup --check
+```
+
+路由规则用 `harness configure` 改，配置落在运行时目录的
+`harness_notifications.json`：
+
+```bash
+pikachu harness configure codex stop --show                 # 看当前配置
+pikachu harness configure codex stop --channels pika,feishu # 改渠道
+pikachu harness configure codex approval --content full     # 完整内容
+pikachu harness configure codex stop --feishu-webhook https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+```
+
+`--content summary` 截到 160 字符（气泡够看），`full` 到 1200（飞书能展开）。
+飞书 webhook 只接受官方域名的 `/open-apis/bot/` 端点——配置文件可能被别的
+工具改或整份拷来，不收窄的话一个内网地址就能把 agent 的回答送出去。
+
+**这条链路上的钩子永远返回 0**：stdin 不是 JSON、配置被写坏、某个渠道超时，
+一律只记日志，绝不让宿主 agent 报错或卡住。但也绝不静默——每种失败都有对应
+的 WARNING，否则"钩子明明配了却没弹泡"完全没线索。单个渠道失败不影响其他
+渠道：飞书挂了不该连气泡也没有。
+
+### Codex 那侧的两个坑
+
+**hooks 是实验特性。** Codex 0.147 里 `hooks.json` 配得再对，只要
+`config.toml` 的 `[features]` 段没有 `hooks = true`，钩子就根本不会被调用
+（日志里一条痕迹都没有）。`pikachu codex setup` 会顺手打开这个开关，
+`--check` 也把它作为一项报出来。首次使用还需要在 Codex 里输入 `/hooks`
+信任一次本地钩子。
+
+**`codex exec` 不跑 Stop 钩子。** 实测非交互模式下钩子不触发（`exec` 明确
+不支持若干交互特性），所以要在桌面 app 或交互式 TUI 里验证，别拿
+`codex exec` 的结果下结论。
+
+### notify 那条老路（仍可用）
+
+`notify` 是单程序槽，本机那个槽被 computer-use 占着。想走这条路就用
+`tools/codex_notify_dispatch.py` 分发：
 
 ```text
 Codex ──notify──> 分发器 ──┬─> 原来的 computer-use（参数原样透传）
@@ -249,14 +294,23 @@ notify = [ "C:\\path\\to\\pythonw.exe",
 `PIKACHU_CODEX_NOTIFY_DOWNSTREAM` 覆盖（设为空字符串表示"只通知皮卡丘、
 不转发"），它的固定参数用 `PIKACHU_CODEX_NOTIFY_DOWNSTREAM_ARGS`。
 
-分发器对 Codex 的承诺是**永远 exit 0**：先转发原有功能（它优先级更高），
-再通知桌宠；下游崩了、路径不存在、负载不是 JSON、总线没起——统统只记日志，
-不让 Codex 卡住或报错。用 `pythonw.exe` 而不是 `python.exe` 是为了每轮结束
-时不闪一下控制台窗口。
+notify 与 Stop 钩子的语义不同：notify 会为内部小轮次触发（agent 自己套娃
+也算一轮），Stop 才是"用户的一条消息真正处理完"。想"每条消息只响一次"
+就用 Stop。
 
-hooks 那条路也能用（事件 JSON 走 stdin），但它在 Codex 0.147 里还是实验
-特性：要在 `features` 里打开、且首次使用需要过一次信任确认，`codex exec`
-非交互模式下实测不触发。notify 这条路开箱即用，所以本机用的是它。
+钩子里一律用 `pythonw.exe` 而不是 `python.exe`：后者是控制台程序，从无
+控制台的父进程启动会**新开一个控制台窗口**，而 Windows Terminal 的
+`closeOnExit` 默认 graceful，进程非零退出就把标签页留在屏幕上——几轮下来
+攒一屏空白终端。这个坑真踩过，现在两侧 setup 都自动挑 `pythonw.exe`。
+
+### 事件负载的两种形状
+
+适配器同时认两套事件名与负载：
+
+- **notify**：事件类型是 `agent-turn-complete`；
+- **hooks**：事件名走 `hook_event_name`，取 `Stop` / `SubagentStop`。负载
+  形状不同（没有 `type`、没有 `input_messages`），所以标题退到工作目录名，
+  正文为空时再退到 `transcript_path` 尾部的最后一条回复。
 
 ```bash
 pikachu codex event '{"type":"agent-turn-complete","input_messages":["审查代码"],"last_assistant_message":"发现 3 处问题……"}'
@@ -264,8 +318,9 @@ echo '<JSON>' | pikachu-codex event   # 也可从 stdin 读
 pikachu codex report "每日简报" --stage done --detail "生成 3 个文件"
 ```
 
-事件模式下总线不在也返回 0（通知钩子绝不能阻塞 Codex）；非"一轮结束"的
-事件（`PreToolUse` 等）安静忽略。测试见 `tests/test_adapter_codex.py` 与
+非"一轮结束"的事件（`PreToolUse` 等）安静忽略。测试见
+`tests/test_harness_notifications.py`、`tests/test_codex_integration.py`、
+`tests/test_zcode_integration.py`、`tests/test_adapter_codex.py` 与
 `tests/test_codex_notify_dispatch.py`。
 
 ## DSH 集成
@@ -375,7 +430,7 @@ python tests/e2e/run_all.py               # 端到端测试（起真进程）
 ruff check .                              # 静态检查
 ```
 
-单元测试 310 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
+单元测试 362 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
 提醒器→总线→桌宠全链路、SSE 心跳保活、跨进程总线重启恢复、GUI 悬浮绑定、
 转身朝向决策（滞回/平滑/经过正面换边）等。
 
