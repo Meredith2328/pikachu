@@ -59,6 +59,76 @@ class TestParseEvent(unittest.TestCase):
         self.assertEqual(p, {"a": 1})
 
 
+class TestParseHookStopEvent(unittest.TestCase):
+    """Codex 0.147 起的 hooks 负载：事件名在 hook_event_name，形状与
+    老的 notify 事件不同（没有 type、没有 input_messages）。"""
+
+    STOP = {
+        "hook_event_name": "Stop",
+        "cwd": r"D:\_Project\pikachu",
+        "session_id": "s-1",
+        "model": "gpt-5.6-luna",
+        "permission_mode": "default",
+        "stop_hook_active": False,
+        "last_assistant_message": "改完三处，测试全绿",
+    }
+
+    def test_stop_recognized(self):
+        r = parse_event(self.STOP)
+        self.assertIsNotNone(r, "Stop 事件必须能弹泡")
+        title, body, level = r
+        self.assertEqual(level, "success")
+        self.assertIn("改完三处", body)
+
+    def test_stop_title_falls_back_to_cwd_name(self):
+        """Stop 负载没有会话名也没有用户输入，用工作目录名兜底。"""
+        self.assertEqual(parse_event(self.STOP)[0], "pikachu")
+
+    def test_subagent_stop_recognized(self):
+        ev = dict(self.STOP, hook_event_name="SubagentStop")
+        self.assertIsNotNone(parse_event(ev))
+
+    def test_other_hook_events_ignored(self):
+        for name in ("PreToolUse", "PostToolUse", "SessionStart",
+                     "UserPromptSubmit", "PreCompact"):
+            with self.subTest(event=name):
+                self.assertIsNone(
+                    parse_event(dict(self.STOP, hook_event_name=name)))
+
+    def test_null_last_message_tolerated(self):
+        """这一轮以工具调用收尾时 last_assistant_message 是 null。"""
+        ev = dict(self.STOP, last_assistant_message=None)
+        r = parse_event(ev)
+        self.assertIsNotNone(r)
+        self.assertEqual(r[1], "")      # 没有正文，但不能崩
+
+    def test_body_from_transcript_when_message_null(self):
+        """负载里没有回复时退到转录文件尾部取最后一条 assistant 文本。"""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            tp = Path(td) / "t.jsonl"
+            tp.write_text(
+                json.dumps({"type": "user",
+                            "message": {"role": "user",
+                                        "content": "问题"}}) + "\n" +
+                json.dumps({"type": "assistant",
+                            "message": {"role": "assistant",
+                                        "content": [{"type": "text",
+                                                     "text": "从转录里读到的回复"}]}}) + "\n",
+                encoding="utf-8")
+            ev = dict(self.STOP, last_assistant_message=None,
+                      transcript_path=str(tp))
+            self.assertIn("从转录里读到的回复", parse_event(ev)[1])
+
+    def test_missing_transcript_is_tolerated(self):
+        ev = dict(self.STOP, last_assistant_message=None,
+                  transcript_path=r"Z:\不存在.jsonl")
+        r = parse_event(ev)
+        self.assertIsNotNone(r)
+        self.assertEqual(r[1], "")
+
+
 class TestCodexAdapterE2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -221,13 +221,42 @@ pikachu zcode "watch-inbox" --stage error --detail "权限不足"
 
 ## Codex 集成
 
-Codex 每轮回复完成会发出 `agent-turn-complete` 事件，接法有两条路：
+Codex 每轮回复完成会发出事件，两套接入方式的事件名不一样，适配器都认：
 
-1. **hooks（推荐）**：在 Codex 的 hooks 配置里把本脚本挂到 turn 完成事件，
-   事件 JSON 走 stdin，适配器自动解析（标题 = 「会话完成 · 会话名或本轮
-   第一条用户输入」，正文 = 回答开头 160 字符，与 zcode Stop 钩子同构）。
-2. **notify**：`~/.codex/config.toml` 的 `notify` 是单程序槽；若已被占用
-   （如 computer-use），写个两行的分发脚本先转发原有程序再调本适配器即可。
+- **notify**：事件类型是 `agent-turn-complete`，配在 `~/.codex/config.toml`；
+- **hooks**（Codex 0.147+）：事件名走 `hook_event_name`，取 `Stop` /
+  `SubagentStop`。负载形状不同（没有 `type`、没有 `input_messages`），
+  所以标题退到工作目录名，正文为空时再退到 `transcript_path` 尾部的
+  最后一条回复。
+
+### notify 只有一个槽位，用分发器共享
+
+`notify` 是单程序槽。本机那个槽已经被 computer-use 占了，直接改成皮卡丘会
+把 computer-use 弄坏，所以走 `tools/codex_notify_dispatch.py` 分发：
+
+```text
+Codex ──notify──> 分发器 ──┬─> 原来的 computer-use（参数原样透传）
+                           └─> 皮卡丘适配器（弹气泡）
+```
+
+```toml
+# ~/.codex/config.toml
+notify = [ "C:\\path\\to\\pythonw.exe",
+           "D:\\_Project\\pikachu\\tools\\codex_notify_dispatch.py" ]
+```
+
+下游程序默认取 computer-use 的常规安装路径，可用
+`PIKACHU_CODEX_NOTIFY_DOWNSTREAM` 覆盖（设为空字符串表示"只通知皮卡丘、
+不转发"），它的固定参数用 `PIKACHU_CODEX_NOTIFY_DOWNSTREAM_ARGS`。
+
+分发器对 Codex 的承诺是**永远 exit 0**：先转发原有功能（它优先级更高），
+再通知桌宠；下游崩了、路径不存在、负载不是 JSON、总线没起——统统只记日志，
+不让 Codex 卡住或报错。用 `pythonw.exe` 而不是 `python.exe` 是为了每轮结束
+时不闪一下控制台窗口。
+
+hooks 那条路也能用（事件 JSON 走 stdin），但它在 Codex 0.147 里还是实验
+特性：要在 `features` 里打开、且首次使用需要过一次信任确认，`codex exec`
+非交互模式下实测不触发。notify 这条路开箱即用，所以本机用的是它。
 
 ```bash
 pikachu codex event '{"type":"agent-turn-complete","input_messages":["审查代码"],"last_assistant_message":"发现 3 处问题……"}'
@@ -235,8 +264,9 @@ echo '<JSON>' | pikachu-codex event   # 也可从 stdin 读
 pikachu codex report "每日简报" --stage done --detail "生成 3 个文件"
 ```
 
-事件模式下总线不在也返回 0（通知钩子绝不能阻塞 Codex）；非 turn-complete
-事件安静忽略。测试见 `tests/test_adapter_codex.py`。
+事件模式下总线不在也返回 0（通知钩子绝不能阻塞 Codex）；非"一轮结束"的
+事件（`PreToolUse` 等）安静忽略。测试见 `tests/test_adapter_codex.py` 与
+`tests/test_codex_notify_dispatch.py`。
 
 ## DSH 集成
 
@@ -345,7 +375,7 @@ python tests/e2e/run_all.py               # 端到端测试（起真进程）
 ruff check .                              # 静态检查
 ```
 
-单元测试 297 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
+单元测试 310 个，端到端 17 项。端到端覆盖：总线 CLI 往返、桌宠进程内嵌总线收发、
 提醒器→总线→桌宠全链路、SSE 心跳保活、跨进程总线重启恢复、GUI 悬浮绑定、
 转身朝向决策（滞回/平滑/经过正面换边）等。
 

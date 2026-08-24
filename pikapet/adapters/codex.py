@@ -23,30 +23,50 @@
 """
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 from .. import bus
 from ..protocol import Notification
 from .common import collapse, stage_level, stage_title
 
+TRANSCRIPT_TAIL_BYTES = 256 * 1024   # 从转录尾部回溯读取的窗口
+
 EVENT_TURN_DONE = "agent-turn-complete"
+# Codex 0.147+ 的 hooks 事件名（payload 里是 hook_event_name）。
+# 只有"这一轮结束了"这两个值该弹泡；其余事件安静忽略。
+HOOK_EVENTS_DONE = ("Stop", "SubagentStop")
 SNIPPET_LEN = 160          # 事件正文摘要长度
 TITLE_LEN = 48             # 标题里用户输入摘要长度
 
 # 事件负载字段链：不同版本/接入方式的键名不完全一致，按序取第一个非空
-TYPE_KEYS = ("type", "event")
+TYPE_KEYS = ("type", "event", "hook_event_name")
 TITLE_KEYS = ("thread-name", "thread_title", "title", "name")
 BODY_KEYS = ("last_assistant_message", "last-assistant-message",
              "lastAssistantMessage", "response", "message")
 
 
+def _is_turn_done(etype: str) -> bool:
+    """这个事件类型代表"一轮结束"吗？
+
+    两套接入方式的事件名不一样：notify 走 `agent-turn-complete`，
+    hooks 走 `Stop` / `SubagentStop`（Codex 0.147 起）。都要认。
+    """
+    if not etype:
+        return True          # 没带类型：按老行为当作 turn-complete
+    if EVENT_TURN_DONE in etype:
+        return True
+    return etype in HOOK_EVENTS_DONE
+
+
 def parse_event(payload):
-    """从事件 JSON 提取 (title, body, level)；非 turn-complete 返回 None。"""
+    """从事件 JSON 提取 (title, body, level)；非"一轮结束"返回 None。"""
     if not isinstance(payload, dict):
         return None
     etype = next((str(payload[k]) for k in TYPE_KEYS if payload.get(k)), "")
-    if etype and EVENT_TURN_DONE not in etype:
-        return None  # 未来新增的事件类型：安静忽略
+    if not _is_turn_done(etype):
+        return None  # 其他事件类型（PreToolUse 等）：安静忽略
     title = next((collapse(payload[k], TITLE_LEN) for k in TITLE_KEYS
                   if payload.get(k)), "")
     if not title:
@@ -58,10 +78,68 @@ def parse_event(payload):
                     title = head
                     break
     if not title:
+        # hooks 的 Stop 负载没有会话名，也没有用户输入——用工作目录名兜底
+        # （和 zcode 钩子的兜底链一致，至少能看出是哪个项目）
+        cwd = payload.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            title = collapse(Path(cwd).name or cwd, TITLE_LEN)
+    if not title:
         title = "Codex 回复完成"
     body = next((collapse(payload[k], SNIPPET_LEN) for k in BODY_KEYS
                  if payload.get(k)), "")
+    if not body:
+        tp = payload.get("transcript_path")
+        if isinstance(tp, str) and tp:
+            body = collapse(_last_assistant_from_transcript(tp), SNIPPET_LEN)
     return title, body, "success"
+
+
+def _last_assistant_from_transcript(path: str) -> str:
+    """从 JSONL 转录尾部取最后一条 assistant 文本。
+
+    hooks 的 Stop 负载里 last_assistant_message 可能是 null（例如这一轮
+    以工具调用收尾），此时退到转录文件，气泡才不会只有一句"回复完成"。
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > TRANSCRIPT_TAIL_BYTES:
+                f.seek(-TRANSCRIPT_TAIL_BYTES, os.SEEK_END)
+            data = f.read(TRANSCRIPT_TAIL_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    for line in reversed(data.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue      # 尾部截断的半条 JSON：预期情况，跳过
+        text = _text_of(obj)
+        if text:
+            return text
+    return ""
+
+
+def _text_of(obj) -> str:
+    """从一条转录记录里取 assistant 文本（兼容几种嵌套形状）。"""
+    if not isinstance(obj, dict):
+        return ""
+    if obj.get("type") not in (None, "assistant", "message", "response_item"):
+        return ""
+    msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+    if msg.get("role") not in (None, "assistant"):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [c.get("text", "") for c in content
+                 if isinstance(c, dict) and c.get("type") in
+                 ("text", "output_text") and isinstance(c.get("text"), str)]
+        return "\n".join(p for p in parts if p).strip()
+    return ""
 
 
 def read_payload(argv_payload):
