@@ -53,6 +53,35 @@ class TestPortFallback(unittest.TestCase):
             finally:
                 bus.stop()
 
+    def test_quit_actually_stops_sse_thread(self):
+        """退出后 SSE 线程必须真的结束。
+
+        它比 Tk 活得更久的话，最后会从非主线程释放持有的 Tk 对象，
+        触发 "Tcl_AsyncDelete: async handler deleted by the wrong thread"
+        —— CI 上就是这样随机挂掉的，本地却很难复现。这里直接断言线程状态，
+        不依赖崩溃是否恰好发生。
+        """
+        import time
+        from pikapet.bus import BusServer
+        from pikapet.pet import PikaPet
+        with isolated_home():
+            bus = BusServer(port=0).start()
+            try:
+                pet = PikaPet(port=bus.port)
+                thread = pet.sse._thread
+                self.assertTrue(thread.is_alive())
+                started = time.monotonic()
+                pet._quit()
+                elapsed = time.monotonic() - started
+                thread.join(timeout=5.0)
+                self.assertFalse(
+                    thread.is_alive(),
+                    "退出后 SSE 线程仍在跑，会在 Tk 销毁后碰 Tk")
+                # 也不该为此卡住用户：退出要快
+                self.assertLess(elapsed, 5.0, f"_quit 耗时 {elapsed:.1f}s")
+            finally:
+                bus.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

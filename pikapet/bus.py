@@ -39,6 +39,11 @@ DEFAULT_HOST = "127.0.0.1"
 # 避开 3000/5000/8000/8080/8765 这类常用开发端口，降低撞车概率
 DEFAULT_PORT = 7452
 SSE_HEARTBEAT = 15.0
+# SSE 线程每次 recv 的时长上限。Windows 上无法打断"已经阻塞住"的 recv
+# （shutdown 与 settimeout 都不生效，实测要等满读超时），所以只能让每次
+# recv 短一点，线程才能频繁回到循环顶部检查停止标志——否则退出桌宠时它
+# 会比 Tk 活得更久，最后从非主线程释放 Tk 对象，触发 Tcl_AsyncDelete。
+POLL_SEC = 0.5
 SSE_REPLAY_LIMIT = 200  # 与历史容量一致：增量补拉不因回放窗口丢消息
 MIN_TOKEN_LEN = 32      # 短于此视为损坏，重新生成
 HISTORY_LIMIT = 200     # 总线保留的历史条数（= SSE 回放窗口）
@@ -634,12 +639,27 @@ class SSEClient:
                     if resp.status != 200:
                         raise urllib.error.HTTPError(
                             path, resp.status, resp.reason or "", None, None)
+                    # 把 socket 超时压到 POLL_SEC：Windows 上既没法 shutdown
+                    # 也没法 settimeout 打断"已经阻塞住"的 recv，只能让每次
+                    # recv 本身短一点，这样线程能频繁回到循环顶部看 stop 标志。
+                    # 真正的"连接死了"判定仍按 read_timeout 累计计算。
+                    if self._sock is not None:
+                        self._sock.settimeout(POLL_SEC)
+                    idle = 0.0
                     buf = b""
                     data_lines = []
                     cur_id = None
                     stale_cursor = False
                     while not self._stop.is_set():
-                        chunk = resp.read1(4096)
+                        try:
+                            chunk = resp.read1(4096)
+                        except socket.timeout:
+                            # 这一小段没数据：累计空闲，超过读超时才当连接已死
+                            idle += POLL_SEC
+                            if idle >= self.read_timeout:
+                                raise
+                            continue
+                        idle = 0.0
                         if not chunk:
                             break
                         buf += chunk
