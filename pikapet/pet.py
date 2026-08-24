@@ -59,6 +59,10 @@ def _clamp(v, lo, hi):
 # 偏好自动落盘的最小间隔（秒）。正常退出会存一次，但被强杀/注销时走不到
 # 那条路；这里定期兜底，内容没变就不写盘。
 AUTOSAVE_SEC = 5.0
+# 退出时等 SSE 线程收尾的上限。它可能正卡在 socket 读取上，超时就放手——
+# 那是 daemon 线程，进程退出会回收；但**必须等**，否则它会在 Tk 销毁后
+# 才醒来并从非主线程碰 Tk，触发 Tcl_AsyncDelete 崩溃。
+SSE_JOIN_TIMEOUT = 3.0
 
 
 # 气泡缩放 → 状态气泡的信息量。缩放调的是"显示多少内容"，不只是字号：
@@ -813,6 +817,15 @@ class PikaPet:
         if self.sse is not None:
             with swallow(log, "停止 SSE 客户端"):
                 self.sse.stop()
+                # 掐断它对桌宠（进而对 Tk）的引用：on_event 是 PikaPet 的
+                # 绑定方法，SSE 线程一直持有它。Windows 上 shutdown 打不断
+                # 正在进行的 recv，线程可能比 Tk 活得更久；等它最后被回收时
+                # 从非主线程释放 Tk 对象，就是 Tcl_AsyncDelete 崩溃。
+                self.sse.on_event = None
+                self.sse.on_error = None
+                # 再给它一点时间自己收尾；超时也无妨（daemon 线程，且已经
+                # 不再持有 Tk 引用）
+                self.sse.join(timeout=SSE_JOIN_TIMEOUT)
         if self.server is not None:
             with swallow(log, "停止内嵌总线"):
                 self.server.stop()

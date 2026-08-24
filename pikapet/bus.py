@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -540,6 +541,9 @@ class SSEClient:
         self._last_mid = None          # 已处理的最大消息 id，断线重连用
         self._stop = threading.Event()
         self._thread = None
+        self._conn = None              # 当前 HTTP 连接（stop 时关掉）
+        self._sock = None              # 该连接的 socket（stop 时 shutdown 打断 recv）
+        self._conn_lock = threading.Lock()
 
     def start(self) -> "SSEClient":
         self._thread = threading.Thread(target=self._run, name="pika-sse",
@@ -548,7 +552,30 @@ class SSEClient:
         return self
 
     def stop(self):
+        """请求停止，并主动切断当前连接把读取打断。
+
+        只置标志位是不够的：SSE 线程通常正卡在 read1() 上，最长要等
+        read_timeout（20 秒）才会醒来看一眼标志位。调用方（桌宠退出）
+        等不了那么久，于是线程会在 Tk 销毁之后才醒来、从非主线程碰 Tk，
+        触发 Tcl_AsyncDelete 崩溃。关掉 socket 让 read1 立刻抛错返回。
+        """
         self._stop.set()
+        with self._conn_lock:
+            conn, self._conn = self._conn, None
+            sock, self._sock = self._sock, None
+        # 只 close() 打不断正在进行的 recv：getresponse() 之后 socket 归
+        # 响应对象所有，conn.sock 已是 None，close 只是解引用。对 socket
+        # 本身 shutdown() 才会让内核把阻塞中的 recv 立刻返回。
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError as e:
+                log.debug("shutdown SSE socket 时出错：%s", e)
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError as e:
+                log.debug("关闭 SSE 连接时出错（已在停止流程中）：%s", e)
 
     def join(self, timeout: float = 3.0):
         if self._thread is not None:
@@ -594,6 +621,15 @@ class SSEClient:
                 try:
                     conn.request("GET", path,
                                  headers={"Accept": "text/event-stream"})
+                    # 登记 socket 让 stop() 能打断正在进行的 recv。必须在
+                    # getresponse() 之前取：那一步会把 socket 所有权交给
+                    # 响应对象，之后 conn.sock 就是 None 了。
+                    with self._conn_lock:
+                        if self._stop.is_set():
+                            conn.close()
+                            break
+                        self._conn = conn
+                        self._sock = conn.sock
                     resp = conn.getresponse()
                     if resp.status != 200:
                         raise urllib.error.HTTPError(
@@ -647,11 +683,16 @@ class SSEClient:
                         if stale_cursor:
                             break
                 finally:
+                    with self._conn_lock:
+                        if self._conn is conn:
+                            self._conn = None
+                            self._sock = None
                     conn.close()
             except Exception as e:
                 log.debug("SSE 连接中断，%s 秒后重连：%s", self.retry_sec, e)
                 with swallow(log, "SSE on_error 回调"):
-                    self.on_error(e)
+                    if self.on_error is not None:
+                        self.on_error(e)
             if not self._stop.is_set():
                 self._stop.wait(self.retry_sec)
 
