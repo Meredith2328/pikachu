@@ -56,7 +56,18 @@ def downstream_command():
 
 
 def forward_downstream(argv):
-    """把原始参数转给 computer-use。它是原有功能，优先跑、失败要留痕。"""
+    """把原始参数转给 computer-use。它是原有功能，优先跑、失败要留痕。
+
+    安全性说明（这里确实在 spawn 子进程，值得写清楚）：
+    - **不经过 shell**：subprocess.run 传的是 argv 列表、shell=False，
+      事件 JSON 里就算带 `&&`、`|`、`%PATH%` 也只是一个普通字符串参数，
+      不会被解释成命令；
+    - **可执行文件不来自事件内容**：只能是内置的 computer-use 路径，或
+      本机环境变量显式指定的路径，且必须先通过 is_file() 检查。Codex 传来
+      的 argv 只作为「参数」附在后面，永远不会变成被执行的程序；
+    - 下游本来就是 Codex 自己要调的程序，我们只是把同一份参数原样递过去，
+      没有放大它的权限。
+    """
     exe = downstream_command()
     if exe is None:
         log.debug("没有配置下游 notify 程序，跳过转发")
@@ -69,7 +80,7 @@ def forward_downstream(argv):
              if a]
     with swallow(log, f"转发 notify 事件给 {exe.name}"):
         subprocess.run([str(exe), *extra, *argv], timeout=TIMEOUT_SEC,
-                       capture_output=True)
+                       capture_output=True, shell=False)
 
 
 def notify_pet(argv):
