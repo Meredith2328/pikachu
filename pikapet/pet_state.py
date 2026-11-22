@@ -7,6 +7,7 @@
 偏好不值得崩 UI，但用户改了设置却存不上应该有迹可循）。
 """
 import json
+import math
 
 from . import paths
 from .logs import get_logger
@@ -50,9 +51,12 @@ def load_state() -> dict:
             state[k] = data[k]
     # 类型钳制：坏数据不允许进入 UI（如 scale 写成字符串）
     try:
-        state["scale"] = _clamp(float(state["scale"]), *SCALE_RANGE)
-        state["bubble_scale"] = _clamp(float(state["bubble_scale"]),
-                                       *BUBBLE_SCALE_RANGE)
+        scale = float(state["scale"])
+        bubble_scale = float(state["bubble_scale"])
+        if not (math.isfinite(scale) and math.isfinite(bubble_scale)):
+            raise ValueError("scale/bubble_scale 必须为有限浮点数")
+        state["scale"] = _clamp(scale, *SCALE_RANGE)
+        state["bubble_scale"] = _clamp(bubble_scale, *BUBBLE_SCALE_RANGE)
         state["muted"] = bool(state["muted"])
         for k in ("x", "y"):
             state[k] = int(state[k]) if state[k] is not None else None

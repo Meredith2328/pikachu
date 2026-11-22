@@ -4,10 +4,33 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  formal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 验证 Lean 4 状态机不变量证明
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+          auto-config: false
+          build: true
+          test: false
+          lint: false
+
   test:
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       # runner 的 stderr 是 cp1252；子进程/测试打印中文会 UnicodeEncodeError。
       # 强制 Python 全 UTF-8 模式（本地 GBK 控制台不受影响）
@@ -32,6 +55,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,6 +68,7 @@ jobs:
   install:
     # 装出来的包必须能在仓库外跑：这正是"运行时数据别写源码目录"要保证的
     runs-on: windows-latest
+    timeout-minutes: 10
     env:
       PYTHONUTF8: "1"
     steps:

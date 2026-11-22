@@ -32,6 +32,8 @@ log = get_logger("turn")
 
 
 def _clamp01(v: float) -> float:
+    if not math.isfinite(v):
+        return 1.0 if v == float("inf") else 0.0
     return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
 
 
