@@ -1,0 +1,6 @@
+name = "pikachu-formal"
+version = "0.1.0"
+defaultTargets = ["TurnDirector"]
+
+[[lean_lib]]
+name = "TurnDirector"
